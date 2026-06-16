@@ -168,20 +168,48 @@ class AKShareAdapter(DataSourceAdapter):
                 df = ak.fx_spot_quote()
                 if df is not None and not df.empty:
                     cols = list(df.columns)
-                    # target 如 "USD/CNY" 或 "美元" 或 "人民币"
-                    search_terms = [target] if target else ["USD/CNY"]
-                    if "美元" in target or "USD" in target.upper():
-                        search_terms = ["USD/CNY"]
-                    for term in search_terms:
-                        mask = df[cols[0]].astype(str).str.contains(term, case=False, na=False)
+                    pair_col = df[cols[0]]
+                    row = None
+                    invert = False
+
+                    # 从 target 提取两个货币代码
+                    import re as re2
+                    codes = re2.findall(r'[A-Z]{3}', target.upper()) if target else []
+                    if len(codes) >= 2:
+                        pair_a = f"{codes[0]}/{codes[1]}"
+                        pair_b = f"{codes[1]}/{codes[0]}"
+                        # 查找正向
+                        mask = pair_col.astype(str).str.contains(pair_a, case=False, na=False)
                         if mask.any():
                             row = df[mask].iloc[0]
-                            return {
-                                "type": "exchange_rate",
-                                "pair": str(row[cols[0]]),
-                                "bid": float(row[cols[1]]),
-                                "ask": float(row[cols[2]]),
-                            }
+                        else:
+                            # 查找反向，标记需要倒数
+                            mask = pair_col.astype(str).str.contains(pair_b, case=False, na=False)
+                            if mask.any():
+                                row = df[mask].iloc[0]
+                                invert = True
+                    else:
+                        # 单个货币名 → 模糊搜索
+                        for kw in [target, "USD/CNY"]:
+                            mask = pair_col.astype(str).str.contains(kw, case=False, na=False)
+                            if mask.any():
+                                row = df[mask].iloc[0]
+                                break
+
+                    if row is not None:
+                        bid = float(row[cols[1]])
+                        ask = float(row[cols[2]])
+                        if invert:
+                            orig_bid, orig_ask = bid, ask
+                            bid = round(1.0 / orig_ask, 6) if orig_ask else 0
+                            ask = round(1.0 / orig_bid, 6) if orig_bid else 0
+                        return {
+                            "type": "exchange_rate",
+                            "pair": str(row[cols[0]]),
+                            "bid": bid,
+                            "ask": ask,
+                            "inverted": invert,
+                        }
 
             # --- 大宗商品（通用搜索 futures_global_spot_em） ---
             elif query_type == "commodity_price":

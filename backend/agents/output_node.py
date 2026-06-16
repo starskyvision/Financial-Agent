@@ -75,8 +75,15 @@ def _format_market_data(market: dict) -> str:
     """格式化市场行情数据"""
     mtype = market.get("type", "")
     if mtype == "exchange_rate":
+        pair = market.get("pair", "")
+        inverted = market.get("inverted", False)
+        if inverted:
+            # 解析 pair 如 "100JPY/CNY" → 显示 "CNY/JPY"
+            parts = pair.replace("100", "").split("/")
+            if len(parts) == 2:
+                pair = f"{parts[1]}/{parts[0]}"
         return (
-            f"## 汇率 {market.get('pair', '')}\n\n"
+            f"## 汇率 {pair}\n\n"
             f"- 买入价: **{market.get('bid', 0):.4f}**\n"
             f"- 卖出价: **{market.get('ask', 0):.4f}**\n"
         )
