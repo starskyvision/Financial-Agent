@@ -88,13 +88,46 @@ async def chat(request: ChatRequest):
             media_type="text/event-stream"
         )
 
+    # chitchat 或没有有效股票代码时，直接用 LLM 回复
+    if intent_result.intent == "chitchat" or (not intent_result.company_code and intent_result.intent != "comprehensive"):
+        DEFAULT_REPLY = (
+            "Hello! I am a financial research AI assistant. "
+            "Please provide a stock code or company name, e.g. analyze Moutai profitability."
+        )
+        FALLBACK_REPLY = (
+            "Hello! I am a financial AI assistant. Try:\\n"
+            "- Analyze stock profitability\\n"
+            "- Latest news for a company\\n"
+            "- Generate comprehensive research report"
+        )
+        async def chitchat_generator():
+            try:
+                from services.llm_service import get_llm_service
+                llm = get_llm_service()
+                result = await llm.invoke("default", [
+                    {"role": "system", "content": "You are a friendly financial AI assistant. Reply concisely in English or Chinese based on the user's language."},
+                    {"role": "user", "content": request.message},
+                ])
+                reply = result.get("content", "") or DEFAULT_REPLY
+            except Exception as e:
+                logger.error("chitchat_llm_failed", error=str(e))
+                reply = FALLBACK_REPLY
+            intent_data = json.dumps({"intent": "chitchat"})
+            yield f"event: intent\ndata: {intent_data}\n\n"
+            for line in reply.split("\n"):
+                chunk = json.dumps({"text": line + "\n"})
+                yield f"event: chunk\ndata: {chunk}\n\n"
+            yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
+        return StreamingResponse(chitchat_generator(), media_type="text/event-stream")
+
     # 降级为 comprehensive 但没有有效 company_code 时，返回提示
     if intent_result.intent == "comprehensive" and not intent_result.company_code:
-        hint_text = '请提供具体的股票代码或公司名称，如 "分析茅台2024Q3" 或 "600519财务分析"。'
+        hint_text = 'Please provide stock code or company name, e.g. "600519 financial analysis".'
         async def hint_generator():
             chunk = json.dumps({"text": hint_text})
             yield f"event: chunk\ndata: {chunk}\n\n"
-            yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
+            done_data = json.dumps({"task_id": task_id})
+            yield f"event: done\ndata: {done_data}\n\n"
         return StreamingResponse(hint_generator(), media_type="text/event-stream")
 
     state = make_initial_state(task_id)
