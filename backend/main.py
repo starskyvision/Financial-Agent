@@ -102,12 +102,19 @@ async def chat(request: ChatRequest):
             "- Latest news for a company\\n"
             "- Generate comprehensive research report"
         )
+        CHITCHAT_SYSTEM = (
+            "You are a helpful financial assistant. Answer the user's question directly and concisely. "
+            "For prices (gold, commodities, currencies, indices), provide approximate levels based on "
+            "your knowledge and note that they are indicative. "
+            "For non-financial questions, respond naturally. "
+            "Reply in the same language as the user (Chinese or English)."
+        )
         async def chitchat_generator():
             try:
                 from services.llm_service import get_llm_service
                 llm = get_llm_service()
                 result = await llm.invoke("default", [
-                    {"role": "system", "content": "You are a friendly financial AI assistant. Reply concisely in English or Chinese based on the user's language."},
+                    {"role": "system", "content": CHITCHAT_SYSTEM},
                     {"role": "user", "content": request.message},
                 ])
                 reply = result.get("content", "") or DEFAULT_REPLY
