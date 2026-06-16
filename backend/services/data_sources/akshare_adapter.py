@@ -20,6 +20,9 @@ METRIC_MAP = {
     "equity_multiplier": "权益乘数",
 }
 
+# 比率类指标（小数表示，不需要单位转换）
+RATIO_METRICS = {"roe", "roa", "gross_margin", "net_margin", "asset_turnover", "equity_multiplier"}
+
 
 def normalize_stock_code(code: str) -> str:
     """归一化股票代码为 AKShare 需要的纯数字格式"""
@@ -43,7 +46,6 @@ class AKShareAdapter(DataSourceAdapter):
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_financials_start", code=code, date=date, requested=metrics)
         try:
-            import akshare as ak
             profit_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
             if profit_df is None or profit_df.empty:
                 logger.warning("akshare_empty_response", code=code)
@@ -56,7 +58,13 @@ class AKShareAdapter(DataSourceAdapter):
                     val = profit_df[cn_name].dropna().iloc[0] if not profit_df[cn_name].dropna().empty else None
                     if val is not None:
                         try:
-                            result[metric] = round(float(val) / 1e8, 4)  # 转换为亿元
+                            num = float(val)
+                            # 比率类指标小数表示，无需单位转换；绝对金额转为亿元
+                            if metric not in RATIO_METRICS:
+                                num = round(num / 1e8, 4)
+                            else:
+                                num = round(num, 4)
+                            result[metric] = num
                         except (ValueError, TypeError):
                             result[metric] = None
             logger.info("akshare_fetch_financials_done", code=code, found=len(result))
@@ -72,7 +80,6 @@ class AKShareAdapter(DataSourceAdapter):
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_news_start", code=code, days=days)
         try:
-            import akshare as ak
             df = ak.stock_news_em(symbol=code)
             if df is None or df.empty:
                 return []
@@ -84,11 +91,20 @@ class AKShareAdapter(DataSourceAdapter):
                 title = str(row.get("标题", ""))
                 if not title:
                     continue
+                published_str = str(row.get("发布时间", ""))
+                # 按 days 参数过滤
+                if published_str and cutoff:
+                    try:
+                        pub_date = datetime.strptime(published_str[:10], "%Y-%m-%d")
+                        if pub_date < cutoff:
+                            continue
+                    except ValueError:
+                        pass  # 无法解析日期时不跳过
                 news_list.append({
                     "title": title,
                     "summary": str(row.get("内容", ""))[:200] if row.get("内容") else "",
                     "source": "东方财富",
-                    "published_at": str(row.get("发布时间", "")),
+                    "published_at": published_str,
                 })
             logger.info("akshare_fetch_news_done", code=code, count=len(news_list))
             return news_list
