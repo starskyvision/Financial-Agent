@@ -124,7 +124,7 @@ class AKShareAdapter(DataSourceAdapter):
             cutoff = datetime.now() - timedelta(days=days)
             news_list = []
             for _, row in df.head(30).iterrows():
-                title = str(row.get("标题", ""))
+                title = str(row.get("新闻标题", "") or row.get("标题", ""))
                 if not title:
                     continue
                 published_str = str(row.get("发布时间", ""))
@@ -137,7 +137,7 @@ class AKShareAdapter(DataSourceAdapter):
                         pass
                 news_list.append({
                     "title": title,
-                    "summary": str(row.get("内容", ""))[:200] if row.get("内容") else "",
+                    "summary": (str(row.get("新闻内容", "") or row.get("内容", "")))[:200],
                     "source": "东方财富",
                     "published_at": published_str,
                 })
