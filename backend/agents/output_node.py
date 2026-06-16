@@ -74,7 +74,22 @@ def _format_simple(raw: dict, company: str) -> str:
 def _format_market_data(market: dict) -> str:
     """格式化市场行情数据"""
     mtype = market.get("type", "")
-    if mtype == "oil_price":
+    if mtype == "exchange_rate":
+        return (
+            f"## 汇率 {market.get('pair', '')}\n\n"
+            f"- 买入价: **{market.get('bid', 0):.4f}**\n"
+            f"- 卖出价: **{market.get('ask', 0):.4f}**\n"
+        )
+    elif mtype == "commodity_price":
+        change = market.get("change_pct", 0)
+        sign = "+" if change >= 0 else ""
+        return (
+            f"## {market.get('label', '大宗商品')}\n\n"
+            f"- 最新价: **{market.get('price', 0):.2f}**\n"
+            f"- 涨跌幅: **{sign}{change:.2f}%**\n"
+            f"\n> 数据来源: 全球期货市场"
+        )
+    elif mtype == "oil_price":
         change = market.get("change_pct", 0)
         sign = "+" if change >= 0 else ""
         return (

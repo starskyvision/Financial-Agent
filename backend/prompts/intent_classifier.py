@@ -18,11 +18,12 @@ INTENT_CLASSIFIER_SYSTEM = """You are a financial query intent classifier. Deter
 
 ## query_type Field
 
-For simple_query, set query_type to indicate what kind of data:
-- **gold_price**: Gold/precious metals price queries
-- **oil_price**: Crude oil/fuel price queries (e.g. "Oil price today", "What is WTI?")
-- **stock_price**: Stock price/trading data queries (e.g. "Moutai stock price", "Is XX up today?")
-- **index_price**: Market index queries (e.g. "SSE Composite", "How's the market?")
+For simple_query, set query_type and query_target to indicate what kind of data:
+- **gold_price**: Gold/precious metals price (query_target="gold")
+- **commodity_price**: Any commodity/futures price — oil, copper, natural gas, etc. (query_target=commodity name, e.g. "crude oil", "copper")
+- **exchange_rate**: Currency exchange rates (query_target=currency pair, e.g. "USD/CNY", "dollar")
+- **stock_price**: Stock price/trading data queries
+- **index_price**: Market index queries
 - **empty string**: Default, query financial metrics
 
 ## Stock Code Resolution
@@ -35,7 +36,7 @@ Extract company_code. Use your training knowledge:
 ## Output Format
 
 Strict JSON only:
-{"intent": "...", "company_code": "...", "company_name": "...", "report_date": "...", "metric_names": [...], "query_type": "..."}
+{"intent": "...", "company_code": "...", "company_name": "...", "report_date": "...", "metric_names": [...], "query_type": "...", "query_target": "..."}
 
 ## Examples
 
@@ -43,10 +44,16 @@ User: Hello
 Output: {"intent": "chitchat", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": ""}
 
 User: Gold price today
-Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "gold_price"}
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "gold_price", "query_target": "gold"}
+
+User: Oil price today
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "commodity_price", "query_target": "原油"}
+
+User: USD to CNY exchange rate
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "exchange_rate", "query_target": "USD/CNY"}
 
 User: Moutai stock price
-Output: {"intent": "simple_query", "company_code": "600519", "company_name": "Moutai", "report_date": "", "metric_names": [], "query_type": "stock_price"}
+Output: {"intent": "simple_query", "company_code": "600519", "company_name": "Moutai", "report_date": "", "metric_names": [], "query_type": "stock_price", "query_target": "600519"}
 
 User: Latest news for CATL
 Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name": "CATL", "report_date": "", "metric_names": [], "query_type": ""}

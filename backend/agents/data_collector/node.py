@@ -21,8 +21,10 @@ async def data_collector_node(state: AgentState) -> AgentState:
     adapter = create_data_source(config)
 
     # --- 市场行情查询（金价/油价/股价/指数） ---
-    if query_type in ("gold_price", "oil_price", "stock_price", "index_price"):
-        market_data = await adapter.fetch_market_data(query_type, code or "")
+    MARKET_QUERY_TYPES = ("gold_price", "commodity_price", "exchange_rate", "stock_price", "index_price")
+    if query_type in MARKET_QUERY_TYPES:
+        target = state.get("query_target", "") or code or ""
+        market_data = await adapter.fetch_market_data(query_type, target)
         if market_data:
             state["raw_data"] = {
                 "financial_metrics": {},

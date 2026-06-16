@@ -161,27 +161,48 @@ class AKShareAdapter(DataSourceAdapter):
             return []
 
     async def fetch_market_data(self, query_type: str, target: str = "") -> dict:
-        """拉取非股票的市场行情数据（金价、油价、指数等）"""
+        """拉取市场行情数据。根据 query_type 选择合适的 AKShare API，用 target 搜索匹配项。"""
         try:
-            if query_type == "oil_price":
-                df = ak.futures_global_spot_em()
+            # --- 汇率 ---
+            if query_type == "exchange_rate":
+                df = ak.fx_spot_quote()
                 if df is not None and not df.empty:
-                    # 找 NYMEX 原油期货
-                    oil = df[df.iloc[:, 2].str.contains("NYMEX原油|WTI|Crude", na=False, case=False)]
-                    if oil.empty:
-                        oil = df[df.iloc[:, 2].str.contains("原油", na=False)]
-                    if not oil.empty:
-                        row = oil.iloc[0]
-                        cols = list(df.columns)
+                    cols = list(df.columns)
+                    # target 如 "USD/CNY" 或 "美元" 或 "人民币"
+                    search_terms = [target] if target else ["USD/CNY"]
+                    if "美元" in target or "USD" in target.upper():
+                        search_terms = ["USD/CNY"]
+                    for term in search_terms:
+                        mask = df[cols[0]].astype(str).str.contains(term, case=False, na=False)
+                        if mask.any():
+                            row = df[mask].iloc[0]
+                            return {
+                                "type": "exchange_rate",
+                                "pair": str(row[cols[0]]),
+                                "bid": float(row[cols[1]]),
+                                "ask": float(row[cols[2]]),
+                            }
+
+            # --- 大宗商品（通用搜索 futures_global_spot_em） ---
+            elif query_type == "commodity_price":
+                df = ak.futures_global_spot_em()
+                if df is not None and not df.empty and target:
+                    cols = list(df.columns)
+                    # 在名称列（索引2）中搜索 target
+                    name_col = cols[2]
+                    mask = df[name_col].astype(str).str.contains(target, case=False, na=False)
+                    if mask.any():
+                        row = df[mask].iloc[0]
                         price = float(row[cols[3]]) if row[cols[3]] and str(row[cols[3]]) != "nan" else 0
                         change = float(row[cols[5]]) if row[cols[5]] and str(row[cols[5]]) != "nan" else 0
                         return {
-                            "type": "oil_price",
-                            "label": str(row[cols[2]]),
+                            "type": "commodity_price",
+                            "label": str(row[name_col]),
                             "price": price,
                             "change_pct": change,
-                            "unit": "美元/桶",
                         }
+
+            # --- 黄金（专用 API，更精确） ---
             elif query_type == "gold_price":
                 df = ak.spot_golden_benchmark_sge()
                 if df is not None and not df.empty:
@@ -195,9 +216,10 @@ class AKShareAdapter(DataSourceAdapter):
                         "date": str(latest[cols[0]]),
                         "unit": "元/克",
                     }
+
+            # --- 股票价格 ---
             elif query_type == "stock_price":
                 code = re.sub(r'\D', '', target)
-                # 港股: 使用 stock_hk_daily
                 if self._is_hk_stock(code):
                     try:
                         df = ak.stock_hk_daily(symbol=code, adjust="")
@@ -206,9 +228,7 @@ class AKShareAdapter(DataSourceAdapter):
                             prev = df.iloc[-2] if len(df) > 1 else latest
                             change_pct = ((latest["close"] - prev["close"]) / prev["close"] * 100) if len(df) > 1 else 0
                             return {
-                                "type": "stock_price",
-                                "code": code,
-                                "name": target,
+                                "type": "stock_price", "code": code, "name": target,
                                 "price": round(float(latest["close"]), 2),
                                 "change_pct": round(float(change_pct), 2),
                                 "open": round(float(latest["open"]), 2),
@@ -216,12 +236,10 @@ class AKShareAdapter(DataSourceAdapter):
                                 "low": round(float(latest["low"]), 2),
                                 "volume": float(latest["volume"]),
                                 "amount": float(latest["amount"]),
-                                "date": str(latest["date"]),
-                                "market": "HK",
+                                "date": str(latest["date"]), "market": "HK",
                             }
                     except Exception:
                         pass
-                # A 股: 使用 stock_zh_a_spot_em
                 else:
                     try:
                         df = ak.stock_zh_a_spot_em()
@@ -229,17 +247,15 @@ class AKShareAdapter(DataSourceAdapter):
                         if not match.empty:
                             row = match.iloc[0]
                             return {
-                                "type": "stock_price",
-                                "code": code,
+                                "type": "stock_price", "code": code,
                                 "name": str(row.get("名称", "")),
                                 "price": float(row.get("最新价", 0)),
                                 "change_pct": float(row.get("涨跌幅", 0)),
                                 "volume": float(row.get("成交量", 0)),
-                                "amount": float(row.get("成交额", 0)),
-                                "market": "A",
+                                "amount": float(row.get("成交额", 0)), "market": "A",
                             }
                     except Exception:
-                        pass  # fallback below
+                        pass
         except Exception as e:
             logger.warning("market_data_error", query_type=query_type, error=str(e))
         return {}

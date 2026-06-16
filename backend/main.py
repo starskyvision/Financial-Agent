@@ -146,6 +146,7 @@ async def chat(request: ChatRequest):
     state["company_name"] = intent_result.company_name
     state["report_date"] = intent_result.report_date
     state["query_type"] = intent_result.query_type
+    state["query_target"] = intent_result.query_target
 
     async def event_generator():
         graph = build_graph()

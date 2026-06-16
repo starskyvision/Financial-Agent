@@ -16,7 +16,8 @@ class IntentResult(BaseModel):
     company_name: str = ""
     report_date: str = ""
     metric_names: list[str] = []
-    query_type: str = ""  # gold_price | stock_price | index_price | "" = financial_metrics
+    query_type: str = ""
+    query_target: str = ""  # e.g. "gold", "USD/CNY", "crude oil"
 
 
 class DupontResult(BaseModel):
@@ -67,7 +68,8 @@ class AgentState(TypedDict, total=False):
     # 任务元数据
     task_id: str
     intent: str
-    query_type: str  # financial_metrics | stock_price | gold_price | index_price
+    query_type: str
+    query_target: str
 
     # 用户输入
     company_code: str

@@ -87,6 +87,7 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
             report_date=data.get("report_date", ""),
             metric_names=data.get("metric_names", []),
             query_type=data.get("query_type", ""),
+            query_target=data.get("query_target", ""),
         )
 
         logger.info("intent_classified", intent=intent_result.intent,
