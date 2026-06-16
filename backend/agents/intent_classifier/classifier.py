@@ -6,26 +6,54 @@ from prompts.intent_classifier import INTENT_CLASSIFIER_SYSTEM
 
 logger = structlog.get_logger()
 
-NAME_TO_CODE = {
-    "茅台": "600519", "贵州茅台": "600519",
-    "五粮液": "000858",
-    "宁德时代": "300750", "宁德": "300750",
-    "比亚迪": "002594",
-    "平安": "601318", "中国平安": "601318",
-    "招商银行": "600036", "招行": "600036",
-    "万科": "000002", "万科A": "000002",
-    "美的": "000333", "美的集团": "000333",
-    "格力": "000651", "格力电器": "000651",
-    "腾讯": "00700", "腾讯控股": "00700",
-    "阿里巴巴": "09988", "阿里": "09988",
-    "百度": "09888",
-    "京东": "09618",
-    "小米": "01810", "小米集团": "01810",
-    "网易": "09999",
-}
+# AKShare 全量 A 股列表缓存（首次使用时加载，后续复用）
+_stock_list_cache: list[dict] | None = None
+
+
+def _load_stock_list() -> list[dict]:
+    """加载全量 A 股列表，缓存复用"""
+    global _stock_list_cache
+    if _stock_list_cache is not None:
+        return _stock_list_cache
+    try:
+        import akshare as ak
+        df = ak.stock_info_a_code_name()
+        _stock_list_cache = [
+            {"code": str(row["code"]), "name": str(row["name"])}
+            for _, row in df.iterrows()
+        ]
+        logger.info("stock_list_loaded", count=len(_stock_list_cache))
+    except Exception as e:
+        logger.warning("stock_list_load_failed", error=str(e))
+        _stock_list_cache = []
+    return _stock_list_cache
+
+
+def _search_stock_code(name: str) -> str:
+    """在 A 股列表中按名称模糊搜索股票代码"""
+    if not name:
+        return ""
+    try:
+        stocks = _load_stock_list()
+        name_lower = name.strip().lower()
+        # 精确匹配
+        for s in stocks:
+            if s["name"].lower() == name_lower:
+                return s["code"]
+        # 模糊匹配：包含关键词
+        matches = [s for s in stocks if name_lower in s["name"].lower()]
+        if len(matches) == 1:
+            return matches[0]["code"]
+        # 多个匹配或 0 个：返回空
+        if matches:
+            logger.info("stock_search_ambiguous", name=name, matches=len(matches))
+    except Exception as e:
+        logger.warning("stock_search_error", name=name, error=str(e))
+    return ""
 
 
 async def classify_intent(message: str, history: list[dict] | None = None) -> IntentResult:
+    """LLM 分类意图 + 提取实体，AKShare 搜索兜底股票代码"""
     llm = get_llm_service()
     messages = [{"role": "system", "content": INTENT_CLASSIFIER_SYSTEM}]
     if history:
@@ -42,19 +70,26 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
             content = content[start:end]
 
         data = json.loads(content)
+        code = data.get("company_code", "")
+        name = data.get("company_name", "")
+
+        # Layer 2: LLM 没给出 code 但给了 name → AKShare 搜索兜底
+        if not code and name:
+            searched = _search_stock_code(name)
+            if searched:
+                code = searched
+                logger.info("stock_code_resolved_by_search", name=name, code=code)
+
         intent_result = IntentResult(
             intent=data.get("intent", "comprehensive"),
-            company_code=data.get("company_code", ""),
-            company_name=data.get("company_name", ""),
+            company_code=code,
+            company_name=name,
             report_date=data.get("report_date", ""),
             metric_names=data.get("metric_names", []),
         )
 
-        if not intent_result.company_code and intent_result.company_name:
-            intent_result.company_code = NAME_TO_CODE.get(intent_result.company_name, "")
-
         logger.info("intent_classified", intent=intent_result.intent,
-                    code=intent_result.company_code)
+                    code=code or "(none)", name=name or "(none)")
         return intent_result
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         logger.warning("intent_parse_error", error=str(e))
