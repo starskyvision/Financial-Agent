@@ -1,3 +1,4 @@
+import re
 import structlog
 import httpx
 import akshare as ak
@@ -176,24 +177,50 @@ class AKShareAdapter(DataSourceAdapter):
                         "unit": "元/克",
                     }
             elif query_type == "stock_price":
-                import re
                 code = re.sub(r'\D', '', target)
-                try:
-                    df = ak.stock_zh_a_spot_em()
-                    match = df[df["代码"] == code]
-                    if not match.empty:
-                        row = match.iloc[0]
-                        return {
-                            "type": "stock_price",
-                            "code": code,
-                            "name": str(row.get("名称", "")),
-                            "price": float(row.get("最新价", 0)),
-                            "change_pct": float(row.get("涨跌幅", 0)),
-                            "volume": float(row.get("成交量", 0)),
-                            "amount": float(row.get("成交额", 0)),
-                        }
-                except Exception:
-                    pass  # fallback below
+                # 港股: 使用 stock_hk_daily
+                if self._is_hk_stock(code):
+                    try:
+                        df = ak.stock_hk_daily(symbol=code, adjust="")
+                        if df is not None and not df.empty:
+                            latest = df.iloc[-1]
+                            prev = df.iloc[-2] if len(df) > 1 else latest
+                            change_pct = ((latest["close"] - prev["close"]) / prev["close"] * 100) if len(df) > 1 else 0
+                            return {
+                                "type": "stock_price",
+                                "code": code,
+                                "name": target,
+                                "price": round(float(latest["close"]), 2),
+                                "change_pct": round(float(change_pct), 2),
+                                "open": round(float(latest["open"]), 2),
+                                "high": round(float(latest["high"]), 2),
+                                "low": round(float(latest["low"]), 2),
+                                "volume": float(latest["volume"]),
+                                "amount": float(latest["amount"]),
+                                "date": str(latest["date"]),
+                                "market": "HK",
+                            }
+                    except Exception:
+                        pass
+                # A 股: 使用 stock_zh_a_spot_em
+                else:
+                    try:
+                        df = ak.stock_zh_a_spot_em()
+                        match = df[df["代码"] == code]
+                        if not match.empty:
+                            row = match.iloc[0]
+                            return {
+                                "type": "stock_price",
+                                "code": code,
+                                "name": str(row.get("名称", "")),
+                                "price": float(row.get("最新价", 0)),
+                                "change_pct": float(row.get("涨跌幅", 0)),
+                                "volume": float(row.get("成交量", 0)),
+                                "amount": float(row.get("成交额", 0)),
+                                "market": "A",
+                            }
+                    except Exception:
+                        pass  # fallback below
         except Exception as e:
             logger.warning("market_data_error", query_type=query_type, error=str(e))
         return {}

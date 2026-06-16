@@ -86,13 +86,22 @@ def _format_market_data(market: dict) -> str:
     elif mtype == "stock_price":
         change = market.get("change_pct", 0)
         sign = "+" if change >= 0 else ""
-        return (
-            f"## {market.get('name', '')}（{market.get('code', '')}）实时行情\n\n"
-            f"- 最新价: **{market.get('price', 0):.2f}**\n"
-            f"- 涨跌幅: **{sign}{change:.2f}%**\n"
-            f"- 成交量: {market.get('volume', 0):.0f} 手\n"
-            f"- 成交额: {market.get('amount', 0):.2f} 元\n"
-        )
+        mkt = market.get("market", "")
+        currency = "港元" if mkt == "HK" else "元"
+        lines = [
+            f"## {market.get('name', '')}（{market.get('code', '')}）",
+            f"日期: {market.get('date', '')} | 市场: {'港股' if mkt == 'HK' else 'A股'}",
+            f"",
+            f"- 收盘价: **{market.get('price', 0):.2f}** {currency}",
+            f"- 涨跌幅: **{sign}{change:.2f}%**",
+        ]
+        if "open" in market:
+            lines.append(f"- 开盘价: {market['open']:.2f}")
+            lines.append(f"- 最高价: {market['high']:.2f}")
+            lines.append(f"- 最低价: {market['low']:.2f}")
+        lines.append(f"- 成交量: {market.get('volume', 0):.0f} 股")
+        lines.append(f"- 成交额: {market.get('amount', 0):.2f} {currency}")
+        return "\n".join(lines)
     return f"## {mtype}\n\n{json.dumps(market, ensure_ascii=False)}"
 
 
