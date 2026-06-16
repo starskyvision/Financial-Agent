@@ -18,7 +18,7 @@ langchain-community>=0.4.0
 openai>=1.30.0          # DeepSeek / Qwen OpenAI 兼容接口
 
 # --- 向量数据库 ---
-pymilvus>=2.4.0,<2.5.0  # 与 docker compose 中 Milvus 2.4 对齐
+pymilvus>=2.4.0  # Milvus 2.5.0 via Docker
 
 # --- 数据库驱动 ---
 sqlalchemy[asyncio]>=2.0.30

@@ -36,8 +36,39 @@ async def lifespan(app: FastAPI):
     logger.info("app_shutdown")
 
 
+from fastapi.responses import RedirectResponse, HTMLResponse
+
 app = FastAPI(title="金融多智能体协作系统", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>金融多智能体协作系统</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 60px auto; padding: 0 20px; background: #f5f7fa; }
+  h1 { font-size: 28px; color: #1a1a2e; }
+  .links { display: flex; gap: 16px; flex-wrap: wrap; margin: 24px 0; }
+  .links a { padding: 12px 24px; background: #4a90d9; color: #fff; text-decoration: none; border-radius: 8px; }
+  code { background: #e8e8e8; padding: 2px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>金融多智能体协作系统</h1>
+<p>基于 LangGraph 的多 Agent 投研辅助 Copilot</p>
+<div class="links">
+  <a href="/docs">Swagger API</a>
+  <a href="http://localhost:5173">前端界面</a>
+  <a href="/api/v1/health">健康检查</a>
+</div>
+<p>启动前端: <code>cd frontend && npm run dev</code></p>
+</body>
+</html>"""
 
 
 @app.post("/api/v1/chat")
@@ -148,13 +179,44 @@ async def get_report(task_id: str):
 
 @app.get("/api/v1/health")
 async def health():
-    health_status = {"status": "healthy", "redis": "unknown"}
+    health_status = {
+        "status": "healthy",
+        "redis": "unknown",
+        "mysql": "unknown",
+        "milvus": "unknown",
+    }
+    # Redis
     try:
         r = await get_redis()
         await r.ping()
         health_status["redis"] = "connected"
     except Exception:
         health_status["redis"] = "disconnected"
+    # MySQL
+    try:
+        import os, pymysql
+        conn = pymysql.connect(
+            host=os.getenv("MYSQL_HOST", "localhost"),
+            port=int(os.getenv("MYSQL_PORT", "3307")),
+            user=os.getenv("MYSQL_USER", "root"),
+            password=os.getenv("MYSQL_PASSWORD", ""),
+            database=os.getenv("MYSQL_DATABASE", "financial_agent"),
+            connect_timeout=3,
+        )
+        conn.ping()
+        conn.close()
+        health_status["mysql"] = "connected"
+    except Exception:
+        health_status["mysql"] = "disconnected"
+    # Milvus
+    try:
+        from pymilvus import connections
+        connections.connect(host="localhost", port="19530", timeout=3)
+        connections.disconnect("default")
+        health_status["milvus"] = "connected"
+    except Exception:
+        health_status["milvus"] = "disconnected"
+
     return health_status
 
 
