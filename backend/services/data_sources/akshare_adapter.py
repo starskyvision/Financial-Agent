@@ -26,25 +26,39 @@ PERCENT_METRICS = {"roe", "roa", "gross_margin", "net_margin", "debt_ratio"}
 BILLION_METRICS = {"net_profit", "revenue"}
 
 
-# 港股财务指标列名映射（stock_hk_financial_indicator_em 实际列名）
+# 港股财务指标列名映射（stock_financial_hk_analysis_indicator_em — 36 列完整数据）
 HK_METRIC_MAP = {
-    "每股净资产(元)": "book_value_per_share",
-    "每股股息TTM(港元)": "dividend_per_share",
-    "每股经营现金流(元)": "operating_cashflow_per_share",
-    "销售净利率(%)": "net_margin",
-    "营业总收入": "revenue",
+    "OPERATE_INCOME": "revenue",
+    "HOLDER_PROFIT": "net_profit",
+    "ROE_AVG": "roe",
+    "ROA": "roa",
+    "GROSS_PROFIT_RATIO": "gross_margin",
+    "NET_PROFIT_RATIO": "net_margin",
+    "DEBT_ASSET_RATIO": "debt_ratio",
+    "BPS": "book_value_per_share",
+    "BASIC_EPS": "eps",
+    "PER_NETCASH_OPERATE": "operating_cashflow_per_share",
 }
 
+# 港股 API 返回的是百分比数值（如 21.13 表示 21.13%），需 /100
+HK_PERCENT_METRICS = {"roe", "roa", "gross_margin", "net_margin", "debt_ratio"}
 
-def _parse_hk_value(raw) -> float | None:
-    """解析港股财务数据（纯数字，无单位后缀）"""
+# 港股 API 返回的是原始金额（元），需 /1e8 转为亿
+HK_BILLION_METRICS = {"revenue", "net_profit"}
+
+
+def _parse_hk_value(raw, metric: str) -> float | None:
+    """解析港股财务数据"""
     if raw is None:
         return None
-    s = str(raw).strip()
-    if not s or s in ("False", "nan", "None", ""):
-        return None
     try:
-        return round(float(s), 4)
+        val = float(raw)
+        if metric in HK_PERCENT_METRICS:
+            return round(val / 100.0, 4)  # 21.13 → 0.2113
+        elif metric in HK_BILLION_METRICS:
+            return round(val / 1e8, 4)     # 751766000000 → 7517.66
+        else:
+            return round(val, 4)
     except (ValueError, TypeError):
         return None
 
@@ -108,30 +122,26 @@ class AKShareAdapter(DataSourceAdapter):
         return result
 
     async def _fetch_hk_financials(self, code: str, metrics: list[str]) -> dict:
-        """港股财务指标数据"""
-        df = ak.stock_hk_financial_indicator_em(symbol=code)
+        """港股财务指标（stock_financial_hk_analysis_indicator_em — 36 列完整数据）"""
+        df = ak.stock_financial_hk_analysis_indicator_em(symbol=code)
         if df is None or df.empty:
             return {}
-        latest = df.iloc[0]
+        latest = df.iloc[0]  # 最新一期年报/季报
         result = {}
-        for cn_col in df.columns:
-            matched_metric = HK_METRIC_MAP.get(cn_col)
+        for col in df.columns:
+            matched_metric = HK_METRIC_MAP.get(col)
             if matched_metric and matched_metric in metrics:
-                raw_val = latest[cn_col]
-                if matched_metric == "net_margin":
-                    # 港股 API 返回百分比数值如 30.23，转为小数 0.3023
-                    val = _parse_hk_value(raw_val)
-                    if val is not None:
-                        result[matched_metric] = round(val / 100.0, 4)
-                elif matched_metric == "revenue":
-                    # 港股 API 返回原始金额（元），转为亿
-                    val = _parse_hk_value(raw_val)
-                    if val is not None:
-                        result[matched_metric] = round(val / 1e8, 4)
-                else:
-                    val = _parse_hk_value(raw_val)
-                    if val is not None:
-                        result[matched_metric] = val
+                val = _parse_hk_value(latest[col], matched_metric)
+                if val is not None:
+                    result[matched_metric] = val
+
+        # 推导权益乘数: debt_ratio = 总负债/总资产
+        # equity_multiplier = 1 / (1 - debt_ratio)
+        if "debt_ratio" in result and "equity_ratio" in metrics:
+            dr = result["debt_ratio"]
+            if dr < 1.0:
+                result["equity_ratio"] = round(dr / (1.0 - dr), 4)
+
         return result
 
     async def fetch_financials(self, code: str, date: str, metrics: list[str]) -> dict:
