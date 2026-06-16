@@ -90,8 +90,9 @@ async def chat(request: ChatRequest):
             media_type="text/event-stream"
         )
 
-    # chitchat 或没有有效股票代码时，直接用 LLM 回复
-    if intent_result.intent == "chitchat" or (not intent_result.company_code and intent_result.intent != "comprehensive"):
+    # chitchat → LLM 直接回复
+    # 市场行情查询（金价/股价等）→ 走 data collector，不走 chitchat
+    if intent_result.intent == "chitchat":
         DEFAULT_REPLY = (
             "Hello! I am a financial research AI assistant. "
             "Please provide a stock code or company name, e.g. analyze Moutai profitability."
@@ -144,6 +145,7 @@ async def chat(request: ChatRequest):
     state["company_code"] = intent_result.company_code
     state["company_name"] = intent_result.company_name
     state["report_date"] = intent_result.report_date
+    state["query_type"] = intent_result.query_type
 
     async def event_generator():
         graph = build_graph()

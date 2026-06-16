@@ -11,11 +11,12 @@ from pydantic import BaseModel
 
 class IntentResult(BaseModel):
     """意图分类器输出"""
-    intent: str  # simple_query | financial_analysis | sentiment_analysis | comprehensive
+    intent: str
     company_code: str
     company_name: str = ""
     report_date: str = ""
     metric_names: list[str] = []
+    query_type: str = ""  # gold_price | stock_price | index_price | "" = financial_metrics
 
 
 class DupontResult(BaseModel):
@@ -66,6 +67,7 @@ class AgentState(TypedDict, total=False):
     # 任务元数据
     task_id: str
     intent: str
+    query_type: str  # financial_metrics | stock_price | gold_price | index_price
 
     # 用户输入
     company_code: str

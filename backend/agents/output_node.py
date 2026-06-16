@@ -1,3 +1,4 @@
+import json
 import structlog
 from state import AgentState
 from constants.metrics import METRIC_LABELS, PERCENT_FORMAT_METRICS
@@ -70,6 +71,31 @@ def _format_simple(raw: dict, company: str) -> str:
     return f"## {company}\n" + "\n".join(lines)
 
 
+def _format_market_data(market: dict) -> str:
+    """格式化市场行情数据"""
+    mtype = market.get("type", "")
+    if mtype == "gold_price":
+        return (
+            f"## 黄金价格\n\n"
+            f"- 品种: {market.get('label', 'Au99.99')}\n"
+            f"- 日期: {market.get('date', '')}\n"
+            f"- 开盘价: **{market.get('open', 0):.2f}** {market.get('unit', '元/克')}\n"
+            f"- 收盘价: **{market.get('close', 0):.2f}** {market.get('unit', '元/克')}\n"
+            f"\n> 数据来源: 上海黄金交易所"
+        )
+    elif mtype == "stock_price":
+        change = market.get("change_pct", 0)
+        sign = "+" if change >= 0 else ""
+        return (
+            f"## {market.get('name', '')}（{market.get('code', '')}）实时行情\n\n"
+            f"- 最新价: **{market.get('price', 0):.2f}**\n"
+            f"- 涨跌幅: **{sign}{change:.2f}%**\n"
+            f"- 成交量: {market.get('volume', 0):.0f} 手\n"
+            f"- 成交额: {market.get('amount', 0):.2f} 元\n"
+        )
+    return f"## {mtype}\n\n{json.dumps(market, ensure_ascii=False)}"
+
+
 async def output_node(state: AgentState) -> AgentState:
     logger.info("output_node_start", task_id=state.get("task_id"), intent=state.get("intent"))
     intent = state.get("intent", "comprehensive")
@@ -80,7 +106,11 @@ async def output_node(state: AgentState) -> AgentState:
 
     elif intent == "simple_query":
         raw = state.get("raw_data") or {}
-        state["chat_reply"] = _format_simple(raw, company)
+        market = raw.get("market_data", {})
+        if market:
+            state["chat_reply"] = _format_market_data(market)
+        else:
+            state["chat_reply"] = _format_simple(raw, company)
 
     elif intent == "sentiment_analysis":
         # 只显示舆情，不显示财务指标

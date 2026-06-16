@@ -15,14 +15,34 @@ async def data_collector_node(state: AgentState) -> AgentState:
     intent = state.get("intent", "comprehensive")
     code = state.get("company_code", "")
     date = state.get("report_date", "")
+    query_type = state.get("query_type", "")
 
+    config = DataSourceConfig(source_type="akshare", timeout=30)
+    adapter = create_data_source(config)
+
+    # --- 市场行情查询（金价/油价/股价/指数） ---
+    if query_type in ("gold_price", "stock_price", "index_price"):
+        market_data = await adapter.fetch_market_data(query_type, code or "")
+        if market_data:
+            state["raw_data"] = {
+                "financial_metrics": {},
+                "news_headlines": [],
+                "doc_snippets": [],
+                "market_data": market_data,
+                "data_sources": ["akshare"],
+                "fetched_at": datetime.now().isoformat(),
+            }
+            logger.info("data_collector_market_done", query_type=query_type)
+        else:
+            state["errors"].append(f"市场行情数据拉取失败: {query_type}")
+            state["raw_data"] = None
+        return state
+
+    # --- 公司财务数据查询 ---
     if not code:
         state["errors"].append("数据收集失败: company_code 为空")
         state["raw_data"] = None
         return state
-
-    config = DataSourceConfig(source_type="akshare", timeout=30)
-    adapter = create_data_source(config)
 
     if intent == "simple_query":
         metrics = ["revenue", "net_profit"]

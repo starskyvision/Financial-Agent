@@ -159,6 +159,45 @@ class AKShareAdapter(DataSourceAdapter):
             logger.error("akshare_fetch_news_error", code=code, error=str(e))
             return []
 
+    async def fetch_market_data(self, query_type: str, target: str = "") -> dict:
+        """拉取非股票的市场行情数据（金价、油价、指数等）"""
+        try:
+            if query_type == "gold_price":
+                df = ak.spot_golden_benchmark_sge()
+                if df is not None and not df.empty:
+                    latest = df.iloc[-1]
+                    cols = list(df.columns)
+                    return {
+                        "type": "gold_price",
+                        "label": "上海金交所 Au99.99 基准价",
+                        "open": round(float(latest[cols[1]]), 2),
+                        "close": round(float(latest[cols[2]]), 2),
+                        "date": str(latest[cols[0]]),
+                        "unit": "元/克",
+                    }
+            elif query_type == "stock_price":
+                import re
+                code = re.sub(r'\D', '', target)
+                try:
+                    df = ak.stock_zh_a_spot_em()
+                    match = df[df["代码"] == code]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        return {
+                            "type": "stock_price",
+                            "code": code,
+                            "name": str(row.get("名称", "")),
+                            "price": float(row.get("最新价", 0)),
+                            "change_pct": float(row.get("涨跌幅", 0)),
+                            "volume": float(row.get("成交量", 0)),
+                            "amount": float(row.get("成交额", 0)),
+                        }
+                except Exception:
+                    pass  # fallback below
+        except Exception as e:
+            logger.warning("market_data_error", query_type=query_type, error=str(e))
+        return {}
+
     async def fetch_documents(self, code: str, doc_type: str, limit: int) -> list[dict]:
         return []
 
