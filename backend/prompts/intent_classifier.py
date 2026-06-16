@@ -20,6 +20,7 @@ INTENT_CLASSIFIER_SYSTEM = """You are a financial query intent classifier. Deter
 
 For simple_query, set query_type to indicate what kind of data:
 - **gold_price**: Gold/precious metals price queries
+- **oil_price**: Crude oil/fuel price queries (e.g. "Oil price today", "What is WTI?")
 - **stock_price**: Stock price/trading data queries (e.g. "Moutai stock price", "Is XX up today?")
 - **index_price**: Market index queries (e.g. "SSE Composite", "How's the market?")
 - **empty string**: Default, query financial metrics

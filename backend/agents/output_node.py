@@ -74,7 +74,17 @@ def _format_simple(raw: dict, company: str) -> str:
 def _format_market_data(market: dict) -> str:
     """格式化市场行情数据"""
     mtype = market.get("type", "")
-    if mtype == "gold_price":
+    if mtype == "oil_price":
+        change = market.get("change_pct", 0)
+        sign = "+" if change >= 0 else ""
+        return (
+            f"## 原油价格\n\n"
+            f"- 品种: {market.get('label', 'NYMEX WTI')}\n"
+            f"- 最新价: **{market.get('price', 0):.2f}** {market.get('unit', '美元/桶')}\n"
+            f"- 涨跌幅: **{sign}{change:.2f}%**\n"
+            f"\n> 数据来源: 全球期货市场"
+        )
+    elif mtype == "gold_price":
         return (
             f"## 黄金价格\n\n"
             f"- 品种: {market.get('label', 'Au99.99')}\n"

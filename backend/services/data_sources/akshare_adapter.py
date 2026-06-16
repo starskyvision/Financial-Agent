@@ -163,7 +163,26 @@ class AKShareAdapter(DataSourceAdapter):
     async def fetch_market_data(self, query_type: str, target: str = "") -> dict:
         """拉取非股票的市场行情数据（金价、油价、指数等）"""
         try:
-            if query_type == "gold_price":
+            if query_type == "oil_price":
+                df = ak.futures_global_spot_em()
+                if df is not None and not df.empty:
+                    # 找 NYMEX 原油期货
+                    oil = df[df.iloc[:, 2].str.contains("NYMEX原油|WTI|Crude", na=False, case=False)]
+                    if oil.empty:
+                        oil = df[df.iloc[:, 2].str.contains("原油", na=False)]
+                    if not oil.empty:
+                        row = oil.iloc[0]
+                        cols = list(df.columns)
+                        price = float(row[cols[3]]) if row[cols[3]] and str(row[cols[3]]) != "nan" else 0
+                        change = float(row[cols[5]]) if row[cols[5]] and str(row[cols[5]]) != "nan" else 0
+                        return {
+                            "type": "oil_price",
+                            "label": str(row[cols[2]]),
+                            "price": price,
+                            "change_pct": change,
+                            "unit": "美元/桶",
+                        }
+            elif query_type == "gold_price":
                 df = ak.spot_golden_benchmark_sge()
                 if df is not None and not df.empty:
                     latest = df.iloc[-1]
