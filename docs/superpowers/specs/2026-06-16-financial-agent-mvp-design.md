@@ -308,12 +308,40 @@ def route_after_financial(state: AgentState) -> str:
 
 ## 八、技术约束
 
-- **LLM API**: DeepSeek-V3 作为主力推理模型，Qwen 作为备选降级
-- **向量模型**: 使用 LLM API 的 embedding 接口（无需本地模型），维度 4096
+### 语言与运行时
+
 - **Python 3.11+**，全异步 I/O（httpx + asyncio）
-- **LangGraph** 版本锁定 0.2+，使用 `StateGraph` API
-- **FastAPI** SSE 使用 `sse-starlette` 或原生 `StreamingResponse`
 - **前端**: Vue3 + Vite，复用 README 已有目录结构，不引入新框架
+
+### 依赖版本（2026-06-16 锁定）
+
+| 包 | 锁定版本 | 约束原因 |
+|---|---|---|
+| langgraph | >=1.2.0 | 最新稳定版，StateGraph API 核心兼容 |
+| langchain | >=1.3.0 | v1.0 稳定版，18 个月无破坏性变更承诺 |
+| langchain-community | >=0.4.0 | 与 LangChain 1.x 配套 |
+| fastapi | >=0.115.0 | 稳定 SSE 支持 |
+| pymilvus | >=2.4.0, <2.5.0 | 与 docker-compose Milvus 2.4 对齐 |
+| celery[redis] | >=5.6.0 | 任务队列，5.6 修复内存泄漏 |
+| redis | >=5.0.0, <=5.2.1 | **Celery 5.6 仅兼容到此范围，禁止升 8.x** |
+| pydantic | >=2.7.0, <3.0.0 | LangGraph/LangChain 均依赖 v2 |
+| openai | >=1.30.0 | DeepSeek/Qwen 兼容接口 |
+| sse-starlette | >=2.0.0 | FastAPI SSE 流式推送 |
+
+### 关键兼容性约束
+
+1. **Celery ↔ Redis**: Celery 5.6 不支持 redis-py 6.x/8.x，redis 必须锁死在 5.0~5.2.1
+2. **pymilvus ↔ Milvus**: pymilvus 2.4.x ↔ Milvus 2.4.x 严格对应，不可混用大版本
+3. **LangGraph ↔ LangChain**: 1.x 系列同步升级，不单独升其中一个
+
+### LLM
+
+- DeepSeek-V3 作为主力推理模型，Qwen 作为备选降级
+- 向量模型: 使用 LLM API 的 embedding 接口（无需本地模型），维度 4096
+
+### FastAPI SSE
+
+- 使用 `sse-starlette` 或原生 `StreamingResponse`
 
 ---
 
