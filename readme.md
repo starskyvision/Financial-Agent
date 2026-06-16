@@ -1,32 +1,39 @@
 # 金融多智能体协作系统
 
-**投研辅助智能 Copilot**：基于 LangGraph 多 Agent 协作，支持结构化财报分析、舆情解读与自动报告生成，具备自我反思校验机制，有效降低金融数据推理中的事实幻觉。
+**投研辅助智能 Copilot**：基于 LangGraph 1.2+ 多 Agent 协作，采用**意图路由 + 双通道**架构，解决传统投顾系统两大痛点——
+
+- **信息过载**：研究员日均需阅读上百份研报/公告 → 意图分类按需调度 Agent，简单查询秒级响应，避免全链路空转
+- **逻辑推理弱**：无法动态关联宏观数据、财报指标与市场情绪 → 校验 Agent + 白盒反思循环，确保关键数据引用准确
+
+## 交互模式
+
+| 通道 | 接口 | 场景 | 响应 |
+|------|------|------|------|
+| 快速对话 | `POST /chat` | "茅台PE多少""分析XX盈利能力" | SSE 流式，秒级 |
+| 深度报告 | `POST /tasks` | 综合投研分析，含杜邦分解+舆情+反思 | 异步，分钟级 |
 
 ## 能力
 
-- 多 Agent 协作推理（数据收集 → 财务分析 → 舆情解读 → 校验总结）
-- 结构化财报分析（杜邦分解、现金流异动检测）
-- 舆情情感判断（新闻与论坛情绪解读）
-- 自我反思与事实核对（校验 Agent 动态路由重写）
-- 异步长任务处理（规划-执行-观察解耦，支持中断与进度查询）
-- 工具调用防幻觉（Few-shot + 格式校验层，防止生成不存在的指标代码）
+- **意图路由** — 理解用户问题后选择性调度 Agent，简单查询不跑全链路
+- **多 Agent 协作** — 数据收集 → 财务分析 → 舆情解读 → 校验总结，条件边按需跳转
+- **结构化财报分析** — 杜邦分解（ROE 三级拆解）、现金流同比异动检测
+- **舆情情感判断** — 新闻情感三分类（积极/中性/消极）+ 强度打分
+- **自我反思校验** — 报告关键数据与源表逐项比对，偏差 >1% 触发重写（最多 3 轮）
+- **异步长任务** — Celery + Redis 解耦，支持中断与进度查询
+- **可插拔数据源** — Adapter 抽象层，默认 AKShare，预留 Wind / Tushare 接口
+- **工具调用防幻觉** — Few-shot + JSON Schema 校验层，防止生成不存在的指标代码
 
 ## 技术栈
 
-FastAPI · LangGraph · Milvus · Redis · Qwen2.5-14B · DeepSeek-V3 · Wind 金融终端 API · Docker
+FastAPI 0.115+ · LangGraph 1.2+ · LangChain 1.3+ · Milvus 2.4 · Celery 5.6 · Redis · MySQL 8.0 · DeepSeek-V3 · AKShare · Docker
 
 ## 快速开始
 
-```
+```bash
 # 1. 复制环境配置文件
-cp backend/.env.example backend/.env      # 填模型 API Key 与数据库连接信息
+cp backend/.env.example backend/.env      # 填入 DEEPSEEK_API_KEY 与数据库连接信息
 
 # 2. 启动基础设施与后端 API
-# 方式 A：直接构建并启动所有容器
-docker compose up -d --build
-
-# 方式 B：如遇网络中断，可以分步拉取依赖镜像，然后再启动
-docker compose pull
 docker compose up -d --build
 
 # 3. 安装后端依赖（本地调试）
@@ -42,40 +49,38 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 ## 文档
 
-- 架构：[docs/architecture.md](docs/architecture.md)
-- 数据契约（schema 真相源）：[docs/data-contracts.md](docs/data-contracts.md)
+- 设计规格：[docs/superpowers/specs/2026-06-16-financial-agent-mvp-design.md](docs/superpowers/specs/2026-06-16-financial-agent-mvp-design.md)
+- 系统架构：[docs/architecture.md](docs/architecture.md)
+- 数据契约：[docs/data-contracts.md](docs/data-contracts.md)
 - Agent 状态流转：[docs/agent-workflow.md](docs/agent-workflow.md)
 - API：[docs/api.md](docs/api.md) ｜ 部署：[docs/deploy.md](docs/deploy.md)
-- 给 AI 协作的指引：[CLAUDE.md](CLAUDE.md)
+- AI 协作指引：[CLAUDE.md](CLAUDE.md)
 
 ## 项目结构
 
 ```
 ├── backend/
-│   ├── agents/                 # 四个专职 Agent
-│   │   ├── data_collector/     # 数据收集 Agent（Wind API、PDF 解析）
-│   │   ├── financial_analyzer/ # 财务分析 Agent（杜邦分解、异动检测）
-│   │   ├── sentiment_analyzer/ # 舆情解读 Agent（情感分析）
-│   │   └── reviewer/           # 校验总结 Agent（事实核对、报告生成）
-│   ├── services/               # 公共服务
-│   │   ├── task_queue/         # Redis 异步任务队列
-│   │   └── retrieval/          # Milvus 向量检索
-│   ├── prompts/                # LLM 提示词模板
-│   ├── db/                     # 数据库初始化 SQL
-│   │   └── init.sql
-│   ├── main.py                 # FastAPI 入口
-│   ├── requirements.txt
+│   ├── agents/                  # 专职 Agent
+│   │   ├── intent_classifier/   # 意图分类 — 入口节点，区分快/慢通道
+│   │   ├── data_collector/      # 数据收集 — 数据源 Adapter 抽象层
+│   │   ├── financial_analyzer/  # 财务分析 — 杜邦分解、异动检测
+│   │   ├── sentiment_analyzer/  # 舆情解读 — 情感分析
+│   │   └── reviewer/            # 校验总结 — 事实核对、反思循环、报告生成
+│   ├── services/
+│   │   ├── data_sources/        # 数据源抽象层（AKShare / Tushare / Wind 预留）
+│   │   ├── task_queue/          # Celery + Redis 异步任务队列
+│   │   └── retrieval/           # Milvus 向量检索
+│   ├── prompts/                 # LLM 提示词模板
+│   ├── db/                      # 数据库初始化 SQL
+│   ├── main.py                  # FastAPI 入口（/chat + /tasks 双路由）
+│   ├── requirements.txt         # 带兼容性约束的版本锁定
 │   └── .env.example
 ├── frontend/
 │   └── src/
-│       ├── views/              # 页面组件（Chat / Report / Dashboard）
-│       └── api/                # API 调用层
-├── docs/                       # 项目文档
-│   ├── architecture.md
-│   ├── data-contracts.md
-│   ├── agent-workflow.md
-│   ├── api.md
-│   └── deploy.md
+│       ├── views/               # Chat / Report / Dashboard
+│       └── api/                 # API 调用层
+├── docs/
+│   └── superpowers/specs/       # 设计规格
 ├── docker-compose.yml
 ├── CLAUDE.md
 └── readme.md
@@ -83,50 +88,54 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-## 🛠️ 项目成员开发任务指南 (2日周期 TodoList)
+## 🛠️ 项目成员开发任务指南
 
-当前**项目基础设施编排**、**LangGraph 状态图骨架**以及**数据库初始化 SQL** 均已全部开发完成，并经语法和配置验证通过。
+当前**基础设施编排**、**LangGraph 状态图骨架**及**数据库初始化 SQL** 已就绪。项目成员需完成以下核心业务逻辑：
 
-项目成员需完成以下任务，完成核心业务逻辑对接：
+### 🏁 基础设施准备
 
-### 🏁 基础设施准备 (全员/运维)
+- 复制 `backend/.env.example` 为 `backend/.env`，填写 `DEEPSEEK_API_KEY`、`QWEN_API_BASE`（备选）和 `MILVUS_URI`
+- 启动 Docker 编排：`docker compose up -d --build`，确认 Milvus、Redis、MySQL 全部正常运行
+- 在 `backend/` 下执行 `pip install -r requirements.txt`（注意 redis<=5.2.1 约束）
 
-- 复制 `backend/.env.example` 为 `backend/.env`，填写实际的 `LLM_API_KEY`、`QWEN_API_BASE`、`DEEPSEEK_API_KEY` 和 `MILVUS_URI`。
-- 启动本地 Docker 编排：`docker compose up -d --build`，确认 Milvus、Redis 全部容器正常运行。
-- 在 `backend/` 目录下执行 `pip install -r requirements.txt` 安装依赖。
+### 📁 任务 1：数据源抽象层 + 数据收集 Agent (`backend/agents/data_collector/` + `backend/services/data_sources/`)
 
-### 📁 任务 1：数据收集 Agent (`backend/agents/data_collector`)
+- **Adapter 接口**：实现 `DataSourceAdapter` 协议（`fetch_financials` / `fetch_news` / `fetch_documents`），所有数据源实现此接口
+- **AKShare 适配器**：对接 AKShare 免费数据源，支持 A 股财务指标、公告标题拉取
+- **PDF 解析器**：PyMuPDF + pdfplumber 提取研报表格和正文，写入 MySQL `documents` 表
+- **数据归一化入库**：按 `company_code` + `report_date` 维度写入 `financial_data` 表
 
-- **Wind API 对接**：在 `data_collector` 逻辑中，封装 Wind 金融终端 API 客户端，支持结构化抓取财报、公告原文及行情数据。
-- **PDF 解析器**：编写 PDF 解析模块，提取研报中的表格、财务指标和正文段落，写入 MySQL `documents` 表。
-- **数据归一化入库**：将采集的原始数据按 `company_code`、`report_date` 维度归一化写入 MySQL `financial_data` 表。
+### 📁 任务 2：意图分类器 (`backend/agents/intent_classifier/`)
 
-### 📁 任务 2：财务分析 Agent (`backend/agents/financial_analyzer`)
+- **结构化路由**：Prompt + LLM 输出四种意图（simple_query / financial_analysis / sentiment_analysis / comprehensive）
+- **实体提取**：自动抽取 `company_code`、`report_date`、关注指标
+- **条件边集成**：与 LangGraph 条件边对接，驱动后续 Agent 选择调度
 
-- **杜邦分解计算**：编写财务指标计算引擎，支持 ROE 杜邦分解（净利率 × 资产周转率 × 权益乘数）。
-- **现金流异动检测**：实现同比/环比现金流变动检测逻辑，标记异常波动并生成预警信号。
-- **Function Calling Schema**：为每个计算函数定义严格的 JSON Schema，包含 Few-shot 示例和输出格式校验层，防止模型生成不存在的指标代码。
+### 📁 任务 3：财务分析 Agent (`backend/agents/financial_analyzer/`)
 
-### 📁 任务 3：舆情解读 Agent (`backend/agents/sentiment_analyzer`)
+- **杜邦分解**：ROE = 净利率 × 资产周转率 × 权益乘数，逐级拆解到三级因子
+- **异动检测**：同比变化超 30% 自动标记预警
+- **Function Calling Schema**：每个计算函数严格 JSON Schema + Few-shot，防幻觉
 
-- **新闻情绪分析**：调用 LLM 配合 `prompts/sentiment_analysis.md` 提示词，对新闻文本进行情感三分类（积极/中性/消极）及强度打分。
-- **论坛舆情聚合**：抓取主流财经论坛讨论，按话题聚合后生成舆情摘要。
-- **情绪时间序列**：将分析结果写入 Redis 时序缓存，供前端展示情绪走势图。
+### 📁 任务 4：舆情解读 Agent (`backend/agents/sentiment_analyzer/`)
 
-### 📁 任务 4：校验与总结 Agent (`backend/agents/reviewer`)
+- **新闻情感分析**：LLM 批量处理新闻标题+摘要，情感三分类 + 强度打分
+- **情绪时间序列**：写入 Redis `sentiment:{code}:{date}`，供前端展示走势
 
-- **事实核对**：在初步结论生成后，触发校验节点比对关键数据与 MySQL 源表。若发现矛盾，通过 LangGraph 条件边动态路由至重写节点。
-- **报告草稿生成**：使用 `prompts/report_generation.md` 提示词，整合各 Agent 输出，生成结构化的投研报告（含数据表格与引用标注）。
-- **自反思循环**：实现最多 3 轮的"生成 → 校验 → 重写"反思循环，确保关键数据引用错误率控制在 5% 以内。
+### 📁 任务 5：校验总结 Agent (`backend/agents/reviewer/`)
 
-### 📁 任务 5：异步任务与状态管理 (`backend/services/task_queue`)
+- **事实核对**：报告关键数据与 MySQL `financial_data` 源表逐项比对，偏差 >1% 触发重写
+- **反思循环**：最多 3 轮"生成 → 校验 → 重写"，通过条件边动态路由
+- **报告生成**：整合各 Agent 输出，生成结构化 Markdown 报告（含数据表格+引用标注）
 
-- **Redis 任务队列**：基于 Redis 实现异步任务队列，将 Agent 的"规划-执行-观察"循环解耦为独立任务。
-- **进度查询与中断**：提供任务状态查询接口（pending/running/done/failed），支持用户随时中断或重试任务。
-- **SSE 流式推送**：通过 FastAPI EventSourceResponse 流式推送报告生成进度与中间结果。
+### 📁 任务 6：异步任务队列 (`backend/services/task_queue/`)
 
-### 📁 任务 6：前端仪表盘与 API 联调 (`frontend/src`)
+- **Celery + Redis**：将 comprehensive 意图的 Agent 全链路解耦为异步任务
+- **进度查询**：`GET /api/v1/tasks/{task_id}` 返回 pending/running/done/failed
+- **SSE 流式推送**：`GET /api/v1/tasks/{task_id}/stream` 推送 Agent 进度与中间结果
 
-- **接口联调**：将各页面的 Mock 方法替换为真实的 Axios 请求（任务提交、进度轮询、报告查看）。
-- **报告渲染**：在 `Report.vue` 中渲染结构化投研报告，支持表格、图表和引用角标展示。
-- **可观测仪表盘**：在 `Dashboard.vue` 中展示任务队列状态、Agent 调用链路和系统健康指标。
+### 📁 任务 7：前端接口联调 (`frontend/src/`)
+
+- **Chat 页面**：对接 `POST /chat` SSE 流式接口，支持 Markdown 实时渲染
+- **Report 页面**：渲染结构化投研报告，含表格、图表和引用角标
+- **Dashboard**：任务队列状态、Agent 调用链路和系统健康指标
