@@ -73,7 +73,12 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
         code = data.get("company_code", "")
         name = data.get("company_name", "")
 
-        # Layer 2: LLM 没给出 code 但给了 name → AKShare 搜索兜底
+        # 非数字代码（如美股 BIDU）→ 清空，走搜索兜底
+        if code and not code.isdigit():
+            logger.info("non_numeric_code_discarded", code=code)
+            code = ""
+
+        # Layer 2: LLM 没给出 code 或给了非数字 code → AKShare 搜索兜底
         if not code and name:
             searched = _search_stock_code(name)
             if searched:

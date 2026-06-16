@@ -28,9 +28,10 @@ For simple_query, set query_type and query_target to indicate what kind of data:
 
 ## Stock Code Resolution
 
-Extract company_code. Use your training knowledge:
+Extract company_code as a NUMERIC string. Use your training knowledge:
 - A-shares: 6-digit code (600519 = Moutai, 000651 = Gree, 688981 = SMIC)
-- HK stocks: 5-digit code starting with 0 (00700 = Tencent, 09988 = Alibaba)
+- HK stocks: 5-digit code starting with 0 (00700 = Tencent, 09988 = Alibaba, 09888 = Baidu)
+- IMPORTANT: For Chinese companies dual-listed in HK+US, use the HK code (e.g. Baidu=09888, JD=09618, NetEase=09999), NOT US tickers like BIDU/JD/NTES
 - If unknown, leave empty but fill company_name
 
 ## Output Format
