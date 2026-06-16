@@ -28,8 +28,9 @@ async def data_collector_node(state: AgentState) -> AgentState:
         metrics = ["revenue", "net_profit"]
     else:
         metrics = [
-            "revenue", "net_profit", "roe", "roa", "gross_margin",
-            "net_margin", "operating_cashflow", "total_assets", "total_liabilities"
+            "revenue", "net_profit", "roe", "gross_margin",
+            "net_margin", "operating_cashflow_per_share",
+            "debt_ratio", "equity_ratio"
         ]
 
     financials_task = adapter.fetch_financials(code, date, metrics)
