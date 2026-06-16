@@ -1,5 +1,6 @@
 import re
 import structlog
+from constants.metrics import FACT_CHECK_MAP
 
 logger = structlog.get_logger()
 
@@ -8,13 +9,6 @@ CLAIM_PATTERNS = [
     (r'(净利润|营收|净利率|毛利率)[^\d]*(\d+\.?\d*)\s*[亿元]', 'billions', 1),
     (r'(现金流)[^\d]*(\d+\.?\d*)\s*[亿元]', 'billions', 1),
 ]
-
-METRIC_NAME_MAP = {
-    "ROE": "roe", "ROA": "roa",
-    "净利润": "net_profit", "营收": "revenue",
-    "净利率": "net_margin", "毛利率": "gross_margin",
-    "现金流": "operating_cashflow",
-}
 
 
 async def verify_facts(report: str, company_code: str, db_session=None) -> list[str]:
@@ -27,7 +21,7 @@ async def verify_facts(report: str, company_code: str, db_session=None) -> list[
             if unit_type == "percent":
                 report_value = report_value / divisor
 
-            metric_name = METRIC_NAME_MAP.get(metric_cn)
+            metric_name = FACT_CHECK_MAP.get(metric_cn)
             if not metric_name:
                 continue
 

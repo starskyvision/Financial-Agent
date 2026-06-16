@@ -1,14 +1,8 @@
 import structlog
 from state import AgentState
+from constants.metrics import METRIC_LABELS, PERCENT_FORMAT_METRICS
 
 logger = structlog.get_logger()
-
-METRIC_LABELS = {
-    "revenue": "营收(亿)", "net_profit": "净利润(亿)", "roe": "ROE",
-    "gross_margin": "毛利率", "net_margin": "净利率",
-    "debt_ratio": "资产负债率", "equity_ratio": "产权比率",
-    "operating_cashflow_per_share": "每股经营现金流",
-}
 
 SENTIMENT_LABELS = {"positive": "积极", "neutral": "中性", "negative": "消极"}
 
@@ -20,7 +14,7 @@ def _format_metrics(metrics: dict, company: str) -> str:
     for k, v in metrics.items():
         if v is not None:
             label = METRIC_LABELS.get(k, k)
-            if k in ("roe", "gross_margin", "net_margin", "debt_ratio"):
+            if k in PERCENT_FORMAT_METRICS:
                 parts.append(f"- {label}: **{v*100:.1f}%**")
             else:
                 parts.append(f"- {label}: **{v:.2f}**")
@@ -67,7 +61,7 @@ def _format_simple(raw: dict, company: str) -> str:
     for k, v in metrics.items():
         if v is not None:
             label = METRIC_LABELS.get(k, k)
-            if k in ("roe", "gross_margin", "net_margin", "debt_ratio"):
+            if k in PERCENT_FORMAT_METRICS:
                 lines.append(f"- {label}: **{v*100:.1f}%**")
             else:
                 lines.append(f"- {label}: **{v:.2f}**")
