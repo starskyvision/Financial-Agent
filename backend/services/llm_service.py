@@ -7,18 +7,22 @@ from collections import deque
 
 logger = structlog.get_logger()
 
+DEFAULT_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+
 AGENT_LLM_CONFIG = {
-    "intent_classifier":    {"model": "deepseek-chat", "temperature": 0.0, "max_tokens": 512},
-    "financial_analyzer":   {"model": "deepseek-chat", "temperature": 0.3, "max_tokens": 2048},
-    "sentiment_analyzer":   {"model": "deepseek-chat", "temperature": 0.3, "max_tokens": 2048},
-    "reviewer":             {"model": "deepseek-chat", "temperature": 0.5, "max_tokens": 8192},
-    "default":              {"model": "deepseek-chat", "temperature": 0.2, "max_tokens": 2048},
+    "intent_classifier":    {"model": os.getenv("LLM_MODEL_INTENT", DEFAULT_MODEL), "temperature": 0.0, "max_tokens": 512},
+    "financial_analyzer":   {"model": os.getenv("LLM_MODEL_FINANCIAL", DEFAULT_MODEL), "temperature": 0.3, "max_tokens": 2048},
+    "sentiment_analyzer":   {"model": os.getenv("LLM_MODEL_SENTIMENT", DEFAULT_MODEL), "temperature": 0.3, "max_tokens": 2048},
+    "reviewer":             {"model": os.getenv("LLM_MODEL_REVIEWER", DEFAULT_MODEL), "temperature": 0.5, "max_tokens": 8192},
+    "default":              {"model": DEFAULT_MODEL, "temperature": 0.2, "max_tokens": 2048},
 }
 
+FALLBACK_MODEL = os.getenv("QWEN_MODEL", "")
+FALLBACK_BASE = os.getenv("QWEN_API_BASE", "")
 FALLBACK_CONFIG = {
-    "model": os.getenv("QWEN_MODEL", "qwen-turbo"),
-    "api_base": os.getenv("QWEN_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-}
+    "model": FALLBACK_MODEL,
+    "api_base": FALLBACK_BASE,
+} if FALLBACK_MODEL and FALLBACK_BASE else None
 
 
 class SimpleRateLimiter:
@@ -49,9 +53,11 @@ class LLMService:
         """Lazy init — only create API clients when first actually used."""
         if self._primary is None:
             api_key = os.getenv("DEEPSEEK_API_KEY", "")
-            base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+            base_url = os.getenv("DEEPSEEK_API_BASE")
+            if not base_url:
+                raise ValueError("DEEPSEEK_API_BASE env var is required (e.g. https://api.deepseek.com/v1)")
             self._primary = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        if self._fallback is None and os.getenv("QWEN_API_KEY"):
+        if self._fallback is None and FALLBACK_CONFIG:
             self._fallback = AsyncOpenAI(
                 api_key=os.getenv("QWEN_API_KEY"),
                 base_url=FALLBACK_CONFIG["api_base"],
