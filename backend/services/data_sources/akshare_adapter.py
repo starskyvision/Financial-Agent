@@ -26,6 +26,29 @@ PERCENT_METRICS = {"roe", "roa", "gross_margin", "net_margin", "debt_ratio"}
 BILLION_METRICS = {"net_profit", "revenue"}
 
 
+# 港股财务指标列名映射（stock_hk_financial_indicator_em 实际列名）
+HK_METRIC_MAP = {
+    "每股净资产(元)": "book_value_per_share",
+    "每股股息TTM(港元)": "dividend_per_share",
+    "每股经营现金流(元)": "operating_cashflow_per_share",
+    "销售净利率(%)": "net_margin",
+    "营业总收入": "revenue",
+}
+
+
+def _parse_hk_value(raw) -> float | None:
+    """解析港股财务数据（纯数字，无单位后缀）"""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s in ("False", "nan", "None", ""):
+        return None
+    try:
+        return round(float(s), 4)
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_value(raw: str, metric: str) -> float | None:
     """解析 AKShare 返回的原始值：去掉单位，转为 float"""
     if raw is None:
@@ -63,45 +86,62 @@ class AKShareAdapter(DataSourceAdapter):
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(self.config.timeout))
         return self._client
 
+    @staticmethod
+    def _is_hk_stock(code: str) -> bool:
+        """港股代码通常为 5 位数字，如 00700、09988"""
+        return len(code) == 5 and code.isdigit() and code[0] == "0"
+
+    async def _fetch_a_share_financials(self, code: str, metrics: list[str]) -> dict:
+        """A 股财报数据"""
+        profit_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
+        if profit_df is None or profit_df.empty:
+            return {}
+        profit_df = profit_df.sort_index(ascending=False)
+        latest = profit_df.iloc[0]
+        result = {}
+        for cn_col in profit_df.columns:
+            matched_metric = METRIC_MAP.get(cn_col)
+            if matched_metric and matched_metric in metrics:
+                val = _parse_value(latest[cn_col], matched_metric)
+                if val is not None:
+                    result[matched_metric] = val
+        return result
+
+    async def _fetch_hk_financials(self, code: str, metrics: list[str]) -> dict:
+        """港股财务指标数据"""
+        df = ak.stock_hk_financial_indicator_em(symbol=code)
+        if df is None or df.empty:
+            return {}
+        latest = df.iloc[0]
+        result = {}
+        for cn_col in df.columns:
+            matched_metric = HK_METRIC_MAP.get(cn_col)
+            if matched_metric and matched_metric in metrics:
+                raw_val = latest[cn_col]
+                if matched_metric == "net_margin":
+                    # 港股 API 返回百分比数值如 30.23，转为小数 0.3023
+                    val = _parse_hk_value(raw_val)
+                    if val is not None:
+                        result[matched_metric] = round(val / 100.0, 4)
+                elif matched_metric == "revenue":
+                    # 港股 API 返回原始金额（元），转为亿
+                    val = _parse_hk_value(raw_val)
+                    if val is not None:
+                        result[matched_metric] = round(val / 1e8, 4)
+                else:
+                    val = _parse_hk_value(raw_val)
+                    if val is not None:
+                        result[matched_metric] = val
+        return result
+
     async def fetch_financials(self, code: str, date: str, metrics: list[str]) -> dict:
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_financials_start", code=code, date=date, requested=metrics)
         try:
-            profit_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
-            if profit_df is None or profit_df.empty:
-                logger.warning("akshare_empty_response", code=code)
-                return {}
-
-            # 取最新一行数据（按报告期降序排列，第一行为最新）
-            profit_df = profit_df.sort_index(ascending=False)
-            latest = profit_df.iloc[0]
-            result = {}
-
-            # 遍历 AKShare 的每一列，匹配我们需要的指标
-            for cn_col in profit_df.columns:
-                matched_metric = METRIC_MAP.get(cn_col)
-                if matched_metric and matched_metric in metrics:
-                    val = _parse_value(latest[cn_col], matched_metric)
-                    if val is not None:
-                        result[matched_metric] = val
-
-            # 根据可用数据推导缺失指标
-            # 如果 ROE 没拿到（"净资产收益率"返回False），尝试"净资产收益率-摊薄"
-            if "roe" not in result and "净资产收益率-摊薄" not in [c for c in profit_df.columns]:
-                # 已经尝试过摊薄映射
-                pass
-
-            # 如果拿到了产权比率，可以推导权益乘数: equity_multiplier = 1 + equity_ratio
-            if "equity_ratio" in result and "equity_multiplier" in metrics:
-                eq_ratio = result.get("equity_ratio")
-                if eq_ratio is not None:
-                    result["equity_multiplier"] = round(1.0 + eq_ratio, 4)
-
-            # 如果拿到了资产负债率+产权比率，尝试推导 total_assets 和 total_liabilities
-            if "debt_ratio" in result and "revenue" in result and "total_assets" in metrics:
-                # 资产负债率 = 总负债/总资产 = 产权比率/(1+产权比率)
-                # 这里留空，因为没有总资产的具体数值
-                pass
+            if self._is_hk_stock(code):
+                result = await self._fetch_hk_financials(code, metrics)
+            else:
+                result = await self._fetch_a_share_financials(code, metrics)
 
             logger.info("akshare_fetch_financials_done", code=code, found=len(result))
             return result
