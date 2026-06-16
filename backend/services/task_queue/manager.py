@@ -17,13 +17,20 @@ class TaskManager:
     @staticmethod
     async def submit(company_code: str, report_date: str = "") -> str:
         task_id = str(uuid.uuid4())[:8]
-        r = await get_redis()
-        await r.setex(f"task:{task_id}", 3600, json.dumps({
-            "task_id": task_id, "company_code": company_code,
-            "status": "pending", "result": None,
-        }, ensure_ascii=False))
-        from services.task_queue.celery_app import run_comprehensive_analysis
-        run_comprehensive_analysis.delay(task_id, company_code, report_date)
+        try:
+            r = await get_redis()
+            await r.setex(f"task:{task_id}", 3600, json.dumps({
+                "task_id": task_id, "company_code": company_code,
+                "status": "pending", "result": None,
+            }, ensure_ascii=False))
+        except Exception as e:
+            logger.warning("redis_submit_failed", error=str(e))
+            # Redis 不可用时仍返回 task_id，降级为内存模式
+        try:
+            from services.task_queue.celery_app import run_comprehensive_analysis
+            run_comprehensive_analysis.delay(task_id, company_code, report_date)
+        except Exception as e:
+            logger.warning("celery_submit_failed", error=str(e))
         logger.info("task_submitted", task_id=task_id)
         return task_id
 

@@ -47,10 +47,32 @@ async def chat(request: ChatRequest):
     logger.info("chat_request", task_id=task_id, message=request.message[:50])
 
     from agents.intent_classifier.classifier import classify_intent
-    intent_result = await classify_intent(request.message)
+    try:
+        intent_result = await classify_intent(request.message)
+    except Exception as e:
+        logger.error("intent_classification_failed", error=str(e))
+        err_text = f"Intent classification failed: {str(e)}"
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'error': err_text})}\n\n"]),
+            media_type="text/event-stream"
+        )
+
+    # 降级为 comprehensive 但没有有效 company_code 时，返回提示
+    if intent_result.intent == "comprehensive" and not intent_result.company_code:
+        hint_text = '请提供具体的股票代码或公司名称，如 "分析茅台2024Q3" 或 "600519财务分析"。'
+        async def hint_generator():
+            chunk = json.dumps({"text": hint_text})
+            yield f"event: chunk\ndata: {chunk}\n\n"
+            yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
+        return StreamingResponse(hint_generator(), media_type="text/event-stream")
 
     if intent_result.intent == "comprehensive":
-        tid = await TaskManager.submit(intent_result.company_code, intent_result.report_date)
+        try:
+            tid = await TaskManager.submit(intent_result.company_code, intent_result.report_date)
+        except Exception as e:
+            logger.error("task_submit_failed", error=str(e))
+            return {"task_id": task_id, "status": "failed",
+                    "message": f"启动分析任务失败: {str(e)}"}
         return {"task_id": tid, "status": "accepted",
                 "message": "综合分析已转为异步任务"}
 

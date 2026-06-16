@@ -41,16 +41,21 @@ class SimpleRateLimiter:
 
 class LLMService:
     def __init__(self):
-        api_key = os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
-        self._primary = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._primary: AsyncOpenAI | None = None
         self._fallback: AsyncOpenAI | None = None
-        if os.getenv("QWEN_API_KEY"):
+        self._rate_limiter = SimpleRateLimiter(max_calls_per_minute=30)
+
+    def _ensure_clients(self):
+        """Lazy init — only create API clients when first actually used."""
+        if self._primary is None:
+            api_key = os.getenv("DEEPSEEK_API_KEY", "")
+            base_url = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+            self._primary = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        if self._fallback is None and os.getenv("QWEN_API_KEY"):
             self._fallback = AsyncOpenAI(
                 api_key=os.getenv("QWEN_API_KEY"),
                 base_url=FALLBACK_CONFIG["api_base"],
             )
-        self._rate_limiter = SimpleRateLimiter(max_calls_per_minute=30)
 
     async def invoke(
         self, agent: str, messages: list[dict],
@@ -58,6 +63,7 @@ class LLMService:
         response_format: type | None = None,
     ) -> dict:
         """统一 LLM 调用入口"""
+        self._ensure_clients()  # lazy init on first call
         config = AGENT_LLM_CONFIG.get(agent, AGENT_LLM_CONFIG["default"])
         await self._rate_limiter.acquire()
 
