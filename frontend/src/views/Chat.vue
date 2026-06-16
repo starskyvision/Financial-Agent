@@ -42,11 +42,8 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
 import { marked } from 'marked'
 import { postChat } from '@/api/chat'
-
-const router = useRouter()
 
 interface Message {
   role: 'user' | 'assistant'
@@ -101,12 +98,6 @@ async function sendMessage(text: string) {
     (taskId) => {
       aiMsg.streaming = false
       loading.value = false
-      if (taskId && aiMsg.intent !== 'comprehensive') {
-        aiMsg.taskId = taskId
-      }
-      if (taskId && aiMsg.intent === 'comprehensive') {
-        router.push(`/report/${taskId}`)
-      }
     },
     (error) => {
       aiMsg.streaming = false
