@@ -119,10 +119,16 @@ def _format_market_data(market: dict) -> str:
         change = market.get("change_pct", 0)
         sign = "+" if change >= 0 else ""
         mkt = market.get("market", "")
-        currency = "港元" if mkt == "HK" else "元"
+        if mkt == "US":
+            currency = "美元"
+        elif mkt == "HK":
+            currency = "港元"
+        else:
+            currency = "元"
+        market_names = {"US": "美股", "HK": "港股", "A": "A股"}
         lines = [
             f"## {market.get('name', '')}（{market.get('code', '')}）",
-            f"日期: {market.get('date', '')} | 市场: {'港股' if mkt == 'HK' else 'A股'}",
+            f"日期: {market.get('date', '')} | 市场: {market_names.get(mkt, mkt)}",
             f"",
             f"- 收盘价: **{market.get('price', 0):.2f}** {currency}",
             f"- 涨跌幅: **{sign}{change:.2f}%**",

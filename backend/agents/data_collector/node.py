@@ -20,6 +20,10 @@ async def data_collector_node(state: AgentState) -> AgentState:
     config = DataSourceConfig(source_type="akshare", timeout=30)
     adapter = create_data_source(config)
 
+    # --- 自动检测美股 ticker ---
+    if not query_type and code and code.isalpha() and code.isupper():
+        query_type = "stock_price"
+
     # --- 市场行情查询（金价/油价/股价/指数） ---
     MARKET_QUERY_TYPES = ("gold_price", "commodity_price", "exchange_rate", "stock_price", "index_price")
     if query_type in MARKET_QUERY_TYPES:

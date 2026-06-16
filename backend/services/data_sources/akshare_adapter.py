@@ -73,6 +73,10 @@ class AKShareAdapter(DataSourceAdapter):
     def _is_hk_stock(code: str) -> bool:
         return len(code) == 5 and code.isdigit() and code[0] == "0"
 
+    @staticmethod
+    def _is_us_stock(code: str) -> bool:
+        return 1 <= len(code) <= 5 and code.isalpha() and code.isupper()
+
     async def _fetch_a_share_financials(self, code: str, metrics: list[str]) -> dict:
         profit_df = ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
         if profit_df is None or profit_df.empty:
@@ -108,6 +112,10 @@ class AKShareAdapter(DataSourceAdapter):
         return result
 
     async def fetch_financials(self, code: str, date: str, metrics: list[str]) -> dict:
+        if self._is_us_stock(code):
+            # 美股暂无 AKShare 财报 API，返回空字典让 LLM 接管
+            logger.info("us_stock_financials_unavailable", code=code)
+            return {}
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_financials_start", code=code, date=date, requested=metrics)
         try:
@@ -247,6 +255,27 @@ class AKShareAdapter(DataSourceAdapter):
 
             # --- 股票价格 ---
             elif query_type == "stock_price":
+                code = target.strip().upper()  # keep US tickers as-is
+                if self._is_us_stock(code):
+                    try:
+                        df = ak.stock_us_daily(symbol=code)
+                        if df is not None and not df.empty:
+                            latest = df.iloc[-1]
+                            prev = df.iloc[-2] if len(df) > 1 else latest
+                            change_pct = ((latest["close"] - prev["close"]) / prev["close"] * 100) if len(df) > 1 else 0
+                            return {
+                                "type": "stock_price", "code": code, "name": target,
+                                "price": round(float(latest["close"]), 2),
+                                "change_pct": round(float(change_pct), 2),
+                                "open": round(float(latest["open"]), 2),
+                                "high": round(float(latest["high"]), 2),
+                                "low": round(float(latest["low"]), 2),
+                                "volume": float(latest["volume"]),
+                                "date": str(latest["date"]), "market": "US",
+                            }
+                    except Exception:
+                        pass
+                # A/H 股需要纯数字代码
                 code = re.sub(r'\D', '', target)
                 if self._is_hk_stock(code):
                     try:
