@@ -97,16 +97,6 @@ async def chat(request: ChatRequest):
             yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
         return StreamingResponse(hint_generator(), media_type="text/event-stream")
 
-    if intent_result.intent == "comprehensive":
-        try:
-            tid = await TaskManager.submit(intent_result.company_code, intent_result.report_date)
-        except Exception as e:
-            logger.error("task_submit_failed", error=str(e))
-            return {"task_id": task_id, "status": "failed",
-                    "message": f"启动分析任务失败: {str(e)}"}
-        return {"task_id": tid, "status": "accepted",
-                "message": "综合分析已转为异步任务"}
-
     state = make_initial_state(task_id)
     state["intent"] = intent_result.intent
     state["company_code"] = intent_result.company_code
