@@ -39,7 +39,8 @@ async def lifespan(app: FastAPI):
 from fastapi.responses import RedirectResponse, HTMLResponse
 
 app = FastAPI(title="金融多智能体协作系统", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/", response_class=HTMLResponse)

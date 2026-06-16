@@ -3,6 +3,8 @@ from state import Anomaly
 
 logger = structlog.get_logger()
 
+ANOMALY_WARNING_THRESHOLD = 0.30
+ANOMALY_CRITICAL_THRESHOLD = 0.50
 TRACKED_METRICS = ["revenue", "net_profit", "roe", "gross_margin", "net_margin", "operating_cashflow"]
 
 
@@ -37,9 +39,9 @@ async def detect_anomalies(code: str, current_metrics: dict, db_session=None) ->
         if yoy_val and yoy_val != 0:
             change_pct = round((current_val - yoy_val) / abs(yoy_val), 4)
             abs_change = abs(change_pct)
-            if abs_change > 0.50:
+            if abs_change > ANOMALY_CRITICAL_THRESHOLD:
                 severity = "critical"
-            elif abs_change > 0.30:
+            elif abs_change > ANOMALY_WARNING_THRESHOLD:
                 severity = "warning"
             else:
                 continue

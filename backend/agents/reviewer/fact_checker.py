@@ -3,6 +3,7 @@ import structlog
 from constants.metrics import FACT_CHECK_MAP
 
 logger = structlog.get_logger()
+FACT_CHECK_DEVIATION_TOLERANCE = 0.01  # 1% deviation triggers error
 
 CLAIM_PATTERNS = [
     (r'(ROE|ROA)[^\d]*(\d+\.?\d*)\s*%', 'percent', 100),
@@ -44,7 +45,7 @@ async def verify_facts(report: str, company_code: str, db_session=None) -> list[
 
             if source_value is not None and source_value != 0:
                 deviation = abs(report_value - source_value) / abs(source_value)
-                if deviation > 0.01:
+                if deviation > FACT_CHECK_DEVIATION_TOLERANCE:
                     errors.append(
                         f"{metric_cn}: 报告值 {report_value}，源数据 {source_value}，偏差 {deviation:.1%}"
                     )
