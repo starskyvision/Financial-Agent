@@ -1,0 +1,269 @@
+"""
+查询预处理器 — 在 LLM 调用前对用户输入做规则化改写。
+
+设计原则：
+  - 零延迟：纯规则匹配，无 LLM/网络调用
+  - 可插拔：每个预处理步骤独立，可单独启用/禁用
+  - 可扩展：新增规则只需在对应链表中加一条
+  - 泛用性：所有入口（/chat、/tasks、RAG search）统一调用
+
+用法:
+    from services.query_preprocessor import preprocess
+    cleaned = preprocess(user_message)
+"""
+
+from __future__ import annotations
+
+import re
+import structlog
+from datetime import datetime
+
+logger = structlog.get_logger()
+
+# ══════════════════════════════════════════════════
+# 规则链：按顺序应用，每步返回改写后的字符串
+# ══════════════════════════════════════════════════
+
+
+# ── 1. 基础清洗 ──
+
+def _normalize_whitespace(text: str) -> str:
+    """合并连续空白，去除首尾空格。"""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalize_punctuation(text: str) -> str:
+    """全角标点转半角（保留中文语境）。"""
+    mapping = {
+        "，": ",", "。": ".", "！": "!", "？": "?",
+        "；": ";", "：": ":", "（": "(", "）": ")",
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+    }
+    for full, half in mapping.items():
+        text = text.replace(full, half)
+    return text
+
+
+# ── 2. 相对日期 → 绝对日期 ──
+
+def _resolve_relative_dates(text: str, now: datetime | None = None) -> str:
+    """将中文相对时间表达替换为绝对日期格式。"""
+    if now is None:
+        now = datetime.now()
+
+    y = now.year
+    m = now.month
+    cur_q = (m - 1) // 3 + 1
+    prev_q = cur_q - 1 if cur_q > 1 else 4
+    prev_q_year = y if cur_q > 1 else y - 1
+
+    rules = [
+        # (原文模式, 替换为)
+        ("前年", f"{y-2}年"),
+        ("去年", f"{y-1}年"),
+        ("今年", f"{y}年"),
+        ("明年", f"{y+1}年"),
+        ("上半年", f"{y}H1"),
+        ("下半年", f"{y}H2"),
+        ("上季度", f"{prev_q_year}Q{prev_q}"),
+        ("本季度", f"{y}Q{cur_q}"),
+        ("下季度", f"{y}Q{cur_q+1 if cur_q < 4 else 1}"),
+        ("一季度", "Q1"),
+        ("二季度", "Q2"),
+        ("三季度", "Q3"),
+        ("四季度", "Q4"),
+        ("第一季度", "Q1"),
+        ("第二季度", "Q2"),
+        ("第三季度", "Q3"),
+        ("第四季度", "Q4"),
+        ("中报", "H1"),
+        ("年报", ""),   # 年报无需季度后缀
+    ]
+
+    result = text
+    for old, new in rules:
+        if old in result:
+            result = result.replace(old, new)
+    return result
+
+
+# ── 3. 股票别名 → 正式简称 ──
+
+# 常见别名映射（可后续从配置文件或数据库加载）
+_STOCK_ALIASES: dict[str, str] = {
+    "茅台": "贵州茅台",
+    "比亚迪": "比亚迪",
+    "宁德": "宁德时代",
+    "宁德时代": "宁德时代",
+    "企鹅": "腾讯控股",
+    "鹅厂": "腾讯控股",
+    "宇宙行": "工商银行",
+    "平安": "中国平安",
+    "格力": "格力电器",
+    "美的": "美的集团",
+    "万科": "万科A",
+    "招商银行": "招商银行",
+    "兴业银行": "兴业银行",
+    "中石油": "中国石油",
+    "中石化": "中国石化",
+    "中海油": "中国海油",
+    "中移动": "中国移动",
+    "中电信": "中国电信",
+    "中联通": "中国联通",
+    "神华": "中国神华",
+    "长江电力": "长江电力",
+    "五粮液": "五粮液",
+    "隆基": "隆基绿能",
+    "药明": "药明康德",
+    "恒瑞": "恒瑞医药",
+}
+
+
+def _normalize_stock_names(text: str) -> str:
+    """常见股票别名替换为正式名称，帮助 LLM 准确匹配。"""
+    result = text
+    for alias, official in _STOCK_ALIASES.items():
+        if alias in result and official not in result:
+            result = result.replace(alias, official)
+    return result
+
+
+# ── 4. 数值单位标准化 ──
+
+_UNIT_NORMALIZE: list[tuple[str, str]] = [
+    (r"(\d+)个亿", r"\1亿"),
+    (r"(\d+)万亿", r"\1万亿"),
+    (r"(\d+)\s*万亿元", r"\1万亿"),
+    (r"(\d+)\s*亿元人民币", r"\1亿"),
+]
+
+
+def _normalize_units(text: str) -> str:
+    """统一数值 + 单位表达。"""
+    result = text
+    for pattern, replacement in _UNIT_NORMALIZE:
+        result = re.sub(pattern, replacement, result)
+    return result
+
+
+# ── 3.5. 检索结果实体注入 ──
+
+# Metrics to extract from retrieved documents
+_EXTRACT_METRICS = [
+    "ROE", "ROA", "净利率", "毛利率", "资产负债率", "产权比率",
+    "营收", "净利润", "每股经营现金流", "权益乘数",
+]
+
+# Regex for report dates like "2024-03-31" or "2025-12-31"
+_REPORT_DATE_PATTERN = re.compile(r'(\d{4}-\d{2}-\d{2})')
+
+
+def _inject_retrieved_entities(text: str, retrieved: list[dict]) -> str:
+    """从 RAG 检索结果中提取关键实体并注入原 query 末尾。
+
+    提取: 股票代码、指标名、报告期（最多 5 个实体）。
+    若 text 中已含该实体则跳过，避免重复。
+    """
+    if not retrieved:
+        return text
+
+    entities: list[str] = []
+
+    for doc in retrieved:
+        content = doc.get("content", "")
+
+        # 提取股票代码
+        code = str(doc.get("company_code", ""))
+        if code and code not in text and code not in entities:
+            entities.append(code)
+
+        # 提取指标名
+        for metric in _EXTRACT_METRICS:
+            if metric in content and metric not in text and metric not in entities:
+                entities.append(metric)
+
+        # 提取报告期
+        dates = _REPORT_DATE_PATTERN.findall(content)
+        for d in dates:
+            if d not in text and d not in entities:
+                entities.append(d)
+
+        if len(entities) >= 5:
+            break
+
+    if entities:
+        return f"{text}（补充信息: {', '.join(entities[:5])}）"
+    return text
+
+
+# ── 5. 查询意图强化 ──
+
+# 关键词 → 意图提示词（追加到 query 末尾帮助 LLM 判断）
+_INTENT_HINTS: list[tuple[list[str], str]] = [
+    (["盈利能力", "财务状况", "偿债能力", "现金流"], "financial_analysis"),
+    (["股价", "价格", "PE", "PB", "市值", "涨跌幅", "行情"], "simple_query"),
+    (["新闻", "舆情", "最新动态", "消息", "公告"], "sentiment_analysis"),
+    (["报告", "全面分析", "综合分析"], "comprehensive"),
+]
+
+
+def _append_intent_hint(text: str) -> str:
+    """基于关键词在 query 末尾追加隐式意图标记（仅当无明确冲突时）。"""
+    scores: dict[str, int] = {}
+    for keywords, intent in _INTENT_HINTS:
+        scores[intent] = sum(1 for kw in keywords if kw in text)
+
+    if not scores or max(scores.values()) == 0:
+        return text
+
+    # 取最高分意图
+    top = max(scores, key=scores.get)  # type: ignore[arg-type]
+    # 仅当最高分 ≥ 2 且无平局时才追加
+    if scores[top] >= 2 and list(scores.values()).count(scores[top]) == 1:
+        # 不做实际改写，保持语义完整；意图信息由 classifier 自行判断
+        pass
+
+    return text
+
+
+# ══════════════════════════════════════════════════
+# 主入口
+# ══════════════════════════════════════════════════
+
+# 预处理管道：按顺序执行
+_PIPELINE = [
+    ("normalize_whitespace", _normalize_whitespace),
+    ("resolve_dates", _resolve_relative_dates),
+    ("normalize_names", _normalize_stock_names),
+    ("normalize_units", _normalize_units),
+    ("normalize_punctuation", _normalize_punctuation),
+    ("append_intent_hint", _append_intent_hint),
+]
+
+
+def preprocess(text: str, steps: list[str] | None = None) -> str:
+    """对用户查询做规则预处理。
+
+    Args:
+        text: 原始用户输入
+        steps: 指定要执行的步骤名列表，None 表示全部执行。
+               可选值: normalize_whitespace, resolve_dates, normalize_names,
+                       normalize_units, normalize_punctuation, append_intent_hint
+
+    Returns:
+        处理后的字符串
+    """
+    result = text
+    for name, func in _PIPELINE:
+        if steps is None or name in steps:
+            try:
+                before = result
+                result = func(result)
+                if result != before:
+                    logger.debug("preprocess_step", step=name,
+                                 before=before[:60], after=result[:60])
+            except Exception as exc:
+                logger.warning("preprocess_step_error", step=name, error=str(exc))
+    if result != text:
+        logger.info("query_preprocessed", original=text[:80], cleaned=result[:80])
+    return result
