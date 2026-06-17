@@ -20,6 +20,48 @@ from datetime import datetime
 
 logger = structlog.get_logger()
 
+# ── Async: RAG 检索上下文（用于改写） ──
+
+async def _retrieve_context(query: str, top_k: int = 3) -> list[dict]:
+    """调用 RAG 检索引擎，返回 top-k 文档片段列表。
+
+    失败时返回空列表（不抛异常），上层降级处理。
+    """
+    try:
+        from services.rag.search import search_rag
+
+        # Use the shared async session factory if available
+        try:
+            from services.db_utils import get_async_session_factory
+            session_factory = get_async_session_factory()
+        except Exception:
+            session_factory = None
+
+        results = await search_rag(
+            query=query,
+            company_code="",
+            top_k=top_k,
+            session_factory=session_factory,
+        )
+        return results or []
+    except Exception as exc:
+        logger.warning("rag_retrieve_failed", error=str(exc))
+        return []
+
+
+def _should_llm_rewrite(retrieved: list[dict], threshold: float) -> bool:
+    """判断是否需要触发 LLM 改写。
+
+    Returns True if:
+      - 无检索结果（query 太模糊，知识库无匹配）
+      - top-1 相似度 < threshold（语义关联弱）
+    """
+    if not retrieved:
+        return True
+    top_score = retrieved[0].get("score", 0) if retrieved else 0
+    return top_score < threshold
+
+
 # ══════════════════════════════════════════════════
 # 规则链：按顺序应用，每步返回改写后的字符串
 # ══════════════════════════════════════════════════

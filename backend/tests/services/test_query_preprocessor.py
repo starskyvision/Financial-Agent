@@ -52,3 +52,48 @@ class TestInjectRetrievedEntities:
         parts = result.split("补充信息: ")[1].rstrip("）")
         entity_count = len(parts.split(", "))
         assert entity_count <= 5
+
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+class TestRetrieveContext:
+    @patch("services.rag.search.search_rag")
+    def test_retrieve_returns_top_k_docs(self, mock_search):
+        mock_search.return_value = [
+            {"content": "doc1", "company_code": "600519", "score": 0.8, "doc_title": "t1"},
+            {"content": "doc2", "company_code": "600519", "score": 0.6, "doc_title": "t2"},
+        ]
+        from services.query_preprocessor import _retrieve_context
+
+        async def run():
+            return await _retrieve_context("茅台盈利能力", top_k=3)
+
+        docs = asyncio.run(run())
+        assert len(docs) == 2
+        assert docs[0]["score"] == 0.8
+
+    @patch("services.rag.search.search_rag")
+    def test_retrieve_returns_empty_on_error(self, mock_search):
+        mock_search.side_effect = Exception("DB down")
+        from services.query_preprocessor import _retrieve_context
+
+        async def run():
+            return await _retrieve_context("茅台", top_k=3)
+
+        docs = asyncio.run(run())
+        assert docs == []
+
+
+class TestConfidenceGate:
+    def test_triggers_rewrite_when_below_threshold(self):
+        from services.query_preprocessor import _should_llm_rewrite
+        assert _should_llm_rewrite([], 0.5) is True        # no results
+        assert _should_llm_rewrite([{"score": 0.3}], 0.5) is True
+        assert _should_llm_rewrite([{"score": 0.49}], 0.5) is True
+
+    def test_skips_rewrite_when_above_threshold(self):
+        from services.query_preprocessor import _should_llm_rewrite
+        assert _should_llm_rewrite([{"score": 0.5}], 0.5) is False
+        assert _should_llm_rewrite([{"score": 0.78}], 0.5) is False
