@@ -69,6 +69,17 @@ def build_report_prompt(state: dict, retry_context: str = "") -> str:
 - 关键主题: {', '.join(sent.get('key_topics', []))}
 - 总结: {sent.get('summary', 'N/A')}
 """
+    # --- RAG 上下文注入 ---
+    rag_context = state.get("rag_context", "")
+    if rag_context:
+        prompt += f"""
+### 参考研报（来自知识库）
+{rag_context}
+
+基于以上参考信息与分析数据生成投研报告。引用参考研报信息时，
+在正文中以 [来源: xxx] 标注出处。
+"""
+
     if retry_context:
         prompt += f"\n## 修正要求\n{retry_context}\n"
     return prompt
