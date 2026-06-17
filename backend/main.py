@@ -42,6 +42,11 @@ app = FastAPI(title="金融多智能体协作系统", version="0.1.0", lifespan=
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 
+from middleware.auth import auth_middleware
+from middleware.rate_limit import rate_limit_middleware
+app.middleware("http")(auth_middleware)
+app.middleware("http")(rate_limit_middleware)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
