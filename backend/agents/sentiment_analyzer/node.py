@@ -49,7 +49,7 @@ async def sentiment_analyzer_node(state: AgentState) -> AgentState:
         result = await llm.invoke("sentiment_analyzer", [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
-        ])
+        ], response_format="json_object")
 
         content = result.get("content", "")
         if "{" in content and "}" in content:

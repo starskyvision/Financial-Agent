@@ -3,16 +3,14 @@ import structlog
 import httpx
 import akshare as ak
 from services.data_sources.base import DataSourceAdapter, DataSourceConfig
-from constants.metrics import A_SHARE_COLUMN_MAP, HK_COLUMN_MAP
+from constants.metrics import A_SHARE_COLUMN_MAP, HK_COLUMN_MAP, PERCENT_FORMAT_METRICS
 
 logger = structlog.get_logger()
 
-# A-Share: "7.51%" / "4858.33亿" format
-A_SHARE_PERCENT_METRICS = {"roe", "roa", "gross_margin", "net_margin", "debt_ratio"}
+# Metric value classification — uses centralized PERCENT_FORMAT_METRICS from constants
+# A-share raw values carry unit suffixes ("7.51%", "4858.33亿")
+# HK raw values are bare numbers (21.13 → 0.2113, 751766000000 → 7517.66)
 A_SHARE_BILLION_METRICS = {"net_profit", "revenue"}
-
-# HK: 21.13 -> 0.2113 / raw yuan -> billions
-HK_PERCENT_METRICS = {"roe", "roa", "gross_margin", "net_margin", "debt_ratio"}
 HK_BILLION_METRICS = {"revenue", "net_profit"}
 
 
@@ -31,7 +29,7 @@ def _parse_value(raw: str, metric: str) -> float | None:
     if not s or s == "False" or s == "nan":
         return None
     try:
-        if metric in A_SHARE_PERCENT_METRICS:
+        if metric in PERCENT_FORMAT_METRICS:
             s = s.replace("%", "")
             return round(float(s) / 100.0, 4)
         elif metric in A_SHARE_BILLION_METRICS:
@@ -49,7 +47,7 @@ def _parse_hk_value(raw, metric: str) -> float | None:
         return None
     try:
         val = float(raw)
-        if metric in HK_PERCENT_METRICS:
+        if metric in PERCENT_FORMAT_METRICS:
             return round(val / 100.0, 4)   # 21.13 -> 0.2113
         elif metric in HK_BILLION_METRICS:
             return round(val / 1e8, 4)      # 751766000000 -> 7517.66

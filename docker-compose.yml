@@ -26,6 +26,82 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
 
+  # --- FastAPI 后端 ---
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://financial_agent:${PG_PASSWORD:-financial_agent_2024}@postgres:5432/financial_agent
+      - REDIS_URL=redis://redis:6379/0
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      - API_KEY=${API_KEY:-}
+      - DATA_SOURCE=${DATA_SOURCE:-akshare}
+      - BGE_M3_PATH=${BGE_M3_PATH:-/models/bge-m3}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ${BGE_M3_PATH:-./models/bge-m3}:/models/bge-m3:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- Celery Worker ---
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A services.task_queue.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://financial_agent:${PG_PASSWORD:-financial_agent_2024}@postgres:5432/financial_agent
+      - REDIS_URL=redis://redis:6379/0
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      - BGE_M3_PATH=${BGE_M3_PATH:-/models/bge-m3}
+    volumes:
+      - ${BGE_M3_PATH:-./models/bge-m3}:/models/bge-m3:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # --- Celery Beat (定时任务) ---
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A services.rag.tasks beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://financial_agent:${PG_PASSWORD:-financial_agent_2024}@postgres:5432/financial_agent
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  # --- 前端 (Nginx + Vue) ---
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_KEY: ${API_KEY:-}
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
   redis_data:

@@ -1,10 +1,11 @@
-const API_BASE = '/api/v1'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
 
 export interface HealthStatus {
   status: string
   redis: string
-  milvus?: string
-  mysql?: string
+  postgres: string
+  version: string
+  uptime_seconds?: number
 }
 
 export async function getHealth(): Promise<HealthStatus> {

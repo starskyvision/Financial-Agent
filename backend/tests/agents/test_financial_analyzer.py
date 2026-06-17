@@ -30,8 +30,18 @@ class TestDupont:
 
 class TestAnomalyDetection:
     @pytest.mark.asyncio
-    async def test_no_db_returns_empty(self):
+    async def test_no_db_falls_back_to_akshare(self):
+        """Without DB session, anomaly detection now uses AKShare historical fetch + rule checks."""
+        # With real AKShare data for a valid code, anomalies may be detected.
+        # This test verifies the function doesn't crash and returns a list.
         anomalies = await detect_anomalies("600519", {"revenue": 100})
+        assert isinstance(anomalies, list)
+        # Anomalies may be detected via AKShare fallback or rule checks — either is valid
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_empty_list(self):
+        """With no code and no DB, only rule-based checks run. Empty metrics → no anomalies."""
+        anomalies = await detect_anomalies("", {})
         assert anomalies == []
 
 

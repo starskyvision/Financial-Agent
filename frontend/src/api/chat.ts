@@ -8,7 +8,14 @@ export interface ChatEvent {
   latency_ms?: number
 }
 
-const API_BASE = '/api/v1'
+const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
+const API_KEY = import.meta.env.VITE_API_KEY || ''
+
+function authHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (API_KEY) headers['X-API-Key'] = API_KEY
+  return headers
+}
 
 export async function postChat(
   message: string,
@@ -19,7 +26,7 @@ export async function postChat(
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ message }),
   })
 
@@ -78,13 +85,15 @@ export async function postChat(
 export async function postTask(companyCode: string, reportDate: string = '') {
   const response = await fetch(`${API_BASE}/tasks`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ company_code: companyCode, report_date: reportDate }),
   })
   return response.json()
 }
 
 export async function getTaskStatus(taskId: string) {
-  const response = await fetch(`${API_BASE}/tasks/${taskId}`)
+  const headers: Record<string, string> = {}
+  if (API_KEY) headers['X-API-Key'] = API_KEY
+  const response = await fetch(`${API_BASE}/tasks/${taskId}`, { headers })
   return response.json()
 }

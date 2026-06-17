@@ -1,11 +1,19 @@
+import os
 import asyncio
 import structlog
 from datetime import datetime
 from services.data_sources import create_data_source
 from services.data_sources.base import DataSourceConfig
+from constants.metrics import DEFAULT_METRICS_FETCH, SIMPLE_QUERY_METRICS
 from state import AgentState
 
 logger = structlog.get_logger()
+
+# --- Configurable settings (env vars with defaults) ---
+DATA_SOURCE_TYPE = os.getenv("DATA_SOURCE", "akshare")
+FETCH_TIMEOUT = int(os.getenv("FETCH_TIMEOUT", "30"))
+NEWS_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "30"))
+DOC_FETCH_LIMIT = int(os.getenv("DOC_FETCH_LIMIT", "5"))
 
 
 async def data_collector_node(state: AgentState) -> AgentState:
@@ -17,7 +25,7 @@ async def data_collector_node(state: AgentState) -> AgentState:
     date = state.get("report_date", "")
     query_type = state.get("query_type", "")
 
-    config = DataSourceConfig(source_type="akshare", timeout=30)
+    config = DataSourceConfig(source_type=DATA_SOURCE_TYPE, timeout=FETCH_TIMEOUT)
     adapter = create_data_source(config)
 
     # --- 自动检测美股 ticker ---
@@ -35,7 +43,7 @@ async def data_collector_node(state: AgentState) -> AgentState:
                 "news_headlines": [],
                 "doc_snippets": [],
                 "market_data": market_data,
-                "data_sources": ["akshare"],
+                "data_sources": [DATA_SOURCE_TYPE],
                 "fetched_at": datetime.now().isoformat(),
             }
             logger.info("data_collector_market_done", query_type=query_type)
@@ -51,19 +59,15 @@ async def data_collector_node(state: AgentState) -> AgentState:
         return state
 
     if intent == "simple_query":
-        metrics = ["revenue", "net_profit"]
+        metrics = SIMPLE_QUERY_METRICS
     else:
-        metrics = [
-            "revenue", "net_profit", "roe", "gross_margin",
-            "net_margin", "operating_cashflow_per_share",
-            "debt_ratio", "equity_ratio"
-        ]
+        metrics = DEFAULT_METRICS_FETCH
 
     financials_task = adapter.fetch_financials(code, date, metrics)
-    news_task = adapter.fetch_news(code, days=30)
+    news_task = adapter.fetch_news(code, days=NEWS_LOOKBACK_DAYS)
 
     if intent == "comprehensive":
-        docs_task = adapter.fetch_documents(code, "announcement", limit=5)
+        docs_task = adapter.fetch_documents(code, "announcement", limit=DOC_FETCH_LIMIT)
         results = await asyncio.gather(financials_task, news_task, docs_task, return_exceptions=True)
     else:
         results = await asyncio.gather(financials_task, news_task, return_exceptions=True)

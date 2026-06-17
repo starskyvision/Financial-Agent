@@ -8,6 +8,7 @@ from collections import deque
 logger = structlog.get_logger()
 
 DEFAULT_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
 AGENT_LLM_CONFIG = {
     "intent_classifier":    {"model": os.getenv("LLM_MODEL_INTENT", DEFAULT_MODEL), "temperature": 0.0, "max_tokens": 512},
@@ -66,7 +67,7 @@ class LLMService:
     async def invoke(
         self, agent: str, messages: list[dict],
         tools: list[dict] | None = None,
-        response_format: type | None = None,
+        response_format: str | None = None,
     ) -> dict:
         """统一 LLM 调用入口"""
         self._ensure_clients()  # lazy init on first call
@@ -75,7 +76,7 @@ class LLMService:
 
         t0 = time.time()
         last_error = None
-        for attempt in range(3):
+        for attempt in range(LLM_MAX_RETRIES):
             try:
                 kwargs = {
                     "model": config["model"],

@@ -3,6 +3,8 @@
 
 中文列名 → 内部 metric 名的映射集中在此处，
 避免 akshare_adapter / output_node / fact_checker 中的重复定义。
+
+所有硬编码指标列表和格式分类必须集中在此文件中定义。
 """
 
 # ============================================================
@@ -65,9 +67,16 @@ PERCENT_FORMAT_METRICS = {
     "dividend_yield", "revenue_yoy",
 }
 
-ABSOLUTE_FORMAT_METRICS = {
-    "revenue", "net_profit",
-}
+# ============================================================
+# 指标拉取列表 — data_collector 按意图拉取的指标集
+# ============================================================
+SIMPLE_QUERY_METRICS = ["revenue", "net_profit"]
+
+DEFAULT_METRICS_FETCH = [
+    "revenue", "net_profit", "roe", "gross_margin",
+    "net_margin", "operating_cashflow_per_share",
+    "debt_ratio", "equity_ratio",
+]
 
 # ============================================================
 # 事实核对用：报告中的中文指标名 → metric 名
@@ -79,13 +88,12 @@ FACT_CHECK_MAP = {
     "营收": "revenue",
     "净利率": "net_margin",
     "毛利率": "gross_margin",
-    "现金流": "operating_cashflow",
+    "经营现金流": "operating_cashflow_per_share",
+    "现金流": "operating_cashflow_per_share",
+    "每股经营现金流": "operating_cashflow_per_share",
+    "资产负债率": "debt_ratio",
 }
 
 
-def is_percent_metric(name: str) -> bool:
-    return name in PERCENT_FORMAT_METRICS
-
-
-def is_billion_metric(name: str) -> bool:
-    return name in ABSOLUTE_FORMAT_METRICS
+# NOTE: is_percent_metric / is_billion_metric removed — callers use
+# PERCENT_FORMAT_METRICS directly. See akshare_adapter.py for parse helpers.

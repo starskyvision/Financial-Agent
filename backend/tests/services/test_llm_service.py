@@ -22,7 +22,11 @@ class TestGetLLMService:
 class TestLLMService:
     @pytest.fixture
     def svc(self):
-        return LLMService()
+        svc = LLMService()
+        # Pre-set _primary to bypass lazy init (which requires env vars)
+        mock_client = MagicMock()
+        svc._primary = mock_client
+        return svc
 
     @pytest.mark.asyncio
     async def test_invoke_returns_content(self, svc):
@@ -46,6 +50,8 @@ class TestLLMService:
 
     @pytest.mark.asyncio
     async def test_invoke_returns_empty_on_exhausted(self, svc):
+        # Mock _ensure_clients to avoid re-init + simulate primary always failing
+        svc._fallback = None  # disable fallback
         with patch.object(svc._primary.chat.completions, "create",
                           side_effect=Exception("always fails")):
             result = await svc.invoke("default", [{"role": "user", "content": "hello"}])

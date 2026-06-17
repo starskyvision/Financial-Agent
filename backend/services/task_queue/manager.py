@@ -23,6 +23,10 @@ class TaskManager:
                 "task_id": task_id, "company_code": company_code,
                 "status": "pending", "result": None,
             }, ensure_ascii=False))
+            # Publish initial status event for SSE subscribers
+            await r.publish(f"task:{task_id}:events", json.dumps({
+                "type": "status", "status": "pending", "task_id": task_id,
+            }, ensure_ascii=False))
         except Exception as e:
             logger.warning("redis_submit_failed", error=str(e))
             # Redis 不可用时仍返回 task_id，降级为内存模式
@@ -31,6 +35,14 @@ class TaskManager:
             run_comprehensive_analysis.delay(task_id, company_code, report_date)
         except Exception as e:
             logger.warning("celery_submit_failed", error=str(e))
+            # Publish failure if Celery is unavailable
+            try:
+                r = await get_redis()
+                await r.publish(f"task:{task_id}:events", json.dumps({
+                    "type": "failed", "message": f"任务队列不可用: {str(e)}", "task_id": task_id,
+                }, ensure_ascii=False))
+            except Exception:
+                pass
         logger.info("task_submitted", task_id=task_id)
         return task_id
 
@@ -50,6 +62,10 @@ class TaskManager:
     async def cancel(task_id: str) -> bool:
         r = await get_redis()
         await r.set(f"task:{task_id}:cancelled", "1", ex=3600)
+        # Publish cancellation event for SSE subscribers
+        await r.publish(f"task:{task_id}:events", json.dumps({
+            "type": "failed", "message": "任务已取消", "task_id": task_id,
+        }, ensure_ascii=False))
         from services.task_queue.celery_app import celery_app
         celery_app.control.revoke(task_id, terminate=True)
         logger.info("task_cancelled", task_id=task_id)

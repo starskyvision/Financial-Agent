@@ -60,7 +60,7 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
         messages.extend(history[-4:])
     messages.append({"role": "user", "content": message})
 
-    result = await llm.invoke("intent_classifier", messages)
+    result = await llm.invoke("intent_classifier", messages, response_format="json_object")
 
     try:
         content = result.get("content", "")

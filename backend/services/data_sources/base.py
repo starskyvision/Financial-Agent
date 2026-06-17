@@ -20,3 +20,9 @@ class DataSourceAdapter(Protocol):
     async def fetch_documents(self, code: str, doc_type: str, limit: int) -> list[dict]:
         """拉取文档切片，MVP 阶段返回空列表"""
         ...
+
+    async def fetch_market_data(self, query_type: str, target: str = "") -> dict:
+        """拉取市场行情数据（汇率/商品/黄金/股价/指数）。
+        返回 {"type": "...", "price": ..., ...} 或空字典。
+        """
+        ...

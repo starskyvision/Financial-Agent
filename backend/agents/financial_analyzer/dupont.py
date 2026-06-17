@@ -47,6 +47,10 @@ def compute_dupont(metrics: dict) -> DupontResult:
     if not has_basic:
         missing.extend(["net_profit", "revenue"])
 
+    # 5. ROE: 优先使用传入值，其次从三分量计算
+    if roe is None and net_margin is not None and asset_turnover is not None and equity_multiplier and equity_multiplier > 0:
+        roe = round(net_margin * asset_turnover * equity_multiplier, 4)
+
     return DupontResult(
         roe=roe if roe else 0,
         net_margin=net_margin if net_margin else 0,
