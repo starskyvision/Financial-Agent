@@ -97,3 +97,35 @@ export async function getTaskStatus(taskId: string) {
   const response = await fetch(`${API_BASE}/tasks/${taskId}`, { headers })
   return response.json()
 }
+
+export interface UploadResult {
+  doc_id: number
+  chunks: number
+  doc_title: string
+  company_code: string
+}
+
+export async function uploadReport(
+  file: File,
+  companyCode: string = '',
+  docTitle: string = '',
+): Promise<UploadResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (companyCode) formData.append('company_code', companyCode)
+  if (docTitle) formData.append('doc_title', docTitle)
+
+  const headers: Record<string, string> = {}
+  if (API_KEY) headers['X-API-Key'] = API_KEY
+
+  const response = await fetch(`${API_BASE}/rag/upload`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+  if (!response.ok) {
+    const err = await response.json()
+    throw new Error(err.detail || '上传失败')
+  }
+  return response.json()
+}

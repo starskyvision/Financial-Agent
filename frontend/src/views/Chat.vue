@@ -24,7 +24,18 @@
       </div>
     </div>
 
+    <div class="upload-area" v-if="uploading || uploadStatus">
+      <span v-if="uploading" class="upload-status">📄 正在上传解析...</span>
+      <span v-else-if="uploadStatus" :class="['upload-status', uploadStatus.type]">
+        {{ uploadStatus.text }}
+      </span>
+    </div>
+
     <div class="chat-input">
+      <label class="upload-btn" title="上传投研报告 PDF">
+        📎
+        <input type="file" accept=".pdf" @change="onFileSelected" hidden ref="fileInput" />
+      </label>
       <textarea
         v-model="input"
         @keydown.enter.exact.prevent="sendMessage(input)"
@@ -43,7 +54,7 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
 import { marked } from 'marked'
-import { postChat } from '@/api/chat'
+import { postChat, uploadReport } from '@/api/chat'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -57,6 +68,9 @@ interface Message {
 const input = ref('')
 const loading = ref(false)
 const messages = ref<Message[]>([])
+const fileInput = ref<HTMLInputElement>()
+const uploading = ref(false)
+const uploadStatus = ref<{ text: string; type: string } | null>(null)
 const msgContainer = ref<HTMLElement>()
 
 const quickQuestions = [
@@ -113,6 +127,34 @@ async function scrollBottom() {
     msgContainer.value.scrollTop = msgContainer.value.scrollHeight
   }
 }
+
+async function onFileSelected(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+
+  uploading.value = true
+  uploadStatus.value = null
+
+  try {
+    const result = await uploadReport(file, '', file.name.replace('.pdf', ''))
+    uploadStatus.value = {
+      text: `✅ "${result.doc_title}" 上传成功，${result.chunks} 个切片已入库`,
+      type: 'success',
+    }
+    // 自动发送消息告知 AI
+    const msg = `我刚上传了一份研报：${result.doc_title}，请基于这份报告帮我分析`
+    input.value = msg
+  } catch (e: any) {
+    uploadStatus.value = {
+      text: `❌ 上传失败: ${e.message}`,
+      type: 'error',
+    }
+  } finally {
+    uploading.value = false
+    if (target) target.value = '' // 允许重复上传同一文件
+  }
+}
 </script>
 
 <style scoped>
@@ -151,9 +193,18 @@ async function scrollBottom() {
 
 .sources { font-size: 11px; color: #999; margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; }
 
-.chat-input { display: flex; gap: 8px; padding: 16px 0; border-top: 1px solid #eee; background: #f5f7fa; }
+.upload-area { padding: 8px 0; text-align: center; }
+.upload-status { font-size: 13px; padding: 6px 12px; border-radius: 6px; }
+.upload-status.success { background: #e8f5e9; color: #2e7d32; }
+.upload-status.error { background: #fdecea; color: #c62828; }
+
+.chat-input { display: flex; gap: 8px; padding: 16px 0; border-top: 1px solid #eee; background: #f5f7fa; align-items: flex-end; }
 .chat-input textarea { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; resize: none; outline: none; font-family: inherit; }
 .chat-input textarea:focus { border-color: #4a90d9; }
 .chat-input button { width: 44px; height: 44px; border: none; border-radius: 8px; background: #4a90d9; color: #fff; font-size: 18px; cursor: pointer; flex-shrink: 0; }
 .chat-input button:disabled { background: #ccc; cursor: not-allowed; }
+
+.upload-btn { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border: 1px dashed #ccc; border-radius: 8px; font-size: 18px; cursor: pointer; flex-shrink: 0; transition: 0.2s; background: #fff; }
+.upload-btn:hover { border-color: #4a90d9; background: #e8f0fe; }
+.upload-btn input { display: none; }
 </style>
