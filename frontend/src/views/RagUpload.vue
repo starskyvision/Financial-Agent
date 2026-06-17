@@ -18,7 +18,7 @@
         <div class="upload-meta">
           <input
             v-model="companyCode"
-            placeholder="股票代码（如 600519）"
+            placeholder="股票代码（如600519）"
             class="code-input"
           />
           <button class="select-btn" @click="$refs.fileInput.click()">选择文件</button>
@@ -32,7 +32,6 @@
         </div>
       </div>
 
-      <!-- 进度条 -->
       <div v-else class="progress-area">
         <div class="progress-label">
           <span>{{ currentFile?.name }}</span>
@@ -45,15 +44,26 @@
       </div>
     </div>
 
-    <!-- 上传结果提示 -->
     <div v-if="uploadResult" :class="['result-msg', uploadResult.ok ? 'success' : 'error']">
       {{ uploadResult.ok ? `✅ "${uploadResult.title}" 上传成功 — ${uploadResult.chunks} 个切片已入库` : `❌ ${uploadResult.error}` }}
     </div>
 
     <!-- 已入库文档 -->
-    <h2 style="margin-top: 32px;">已入库文档</h2>
-    <div class="doc-list" v-if="documents.length">
-      <div class="doc-card" v-for="doc in documents" :key="doc.id">
+    <div class="doc-header">
+      <h2>已入库文档（{{ totalCount }}）</h2>
+      <div class="doc-toolbar">
+        <input
+          v-model="searchQuery"
+          placeholder="搜索文档标题或股票代码..."
+          class="search-input"
+          @input="onSearch"
+        />
+        <button class="refresh-btn" @click="fetchDocuments">🔄 刷新</button>
+      </div>
+    </div>
+
+    <div class="doc-list" v-if="filteredDocs.length">
+      <div class="doc-card" v-for="doc in filteredDocs" :key="doc.id">
         <div class="doc-icon">📑</div>
         <div class="doc-info">
           <div class="doc-title">{{ doc.doc_title }}</div>
@@ -71,17 +81,13 @@
       </div>
     </div>
     <div v-else class="empty-docs">
-      暂无文档，上传一份 PDF 试试。
+      {{ searchQuery ? '没有匹配的文档' : '暂无文档，上传一份 PDF 试试。' }}
     </div>
-
-    <!-- 刷新按钮 -->
-    <button class="refresh-btn" @click="fetchDocuments">🔄 刷新列表</button>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { uploadReport } from '@/api/chat'
+import { ref, computed, onMounted } from 'vue'
 
 interface DocItem {
   id: number
@@ -102,7 +108,9 @@ const progressStep = ref('')
 const currentFile = ref<File | null>(null)
 const companyCode = ref('')
 const uploadResult = ref<{ ok: boolean; title?: string; chunks?: number; error?: string } | null>(null)
-const documents = ref<DocItem[]>([])
+const allDocuments = ref<DocItem[]>([])
+const searchQuery = ref('')
+const totalCount = ref(0)
 
 onMounted(() => fetchDocuments())
 
@@ -117,20 +125,33 @@ async function fetchDocuments() {
     const resp = await fetch(`${API_BASE}/rag/documents?limit=100`, { headers: authHeaders() })
     if (resp.ok) {
       const data = await resp.json()
-      documents.value = data.documents || []
+      allDocuments.value = data.documents || []
+      totalCount.value = data.total || allDocuments.value.length
     }
-  } catch (e) {
-    // ignore
-  }
+  } catch (e) { /* ignore */ }
 }
+
+// 最多显示 10 条，支持搜索过滤
+const filteredDocs = computed(() => {
+  let docs = allDocuments.value
+  const q = searchQuery.value.trim().toLowerCase()
+  if (q) {
+    docs = docs.filter(d =>
+      d.doc_title.toLowerCase().includes(q) ||
+      d.company_code.toLowerCase().includes(q)
+    )
+  }
+  return docs.slice(0, 10)
+})
+
+function onSearch() { /* computed reacts automatically */ }
 
 async function deleteDoc(id: number) {
   try {
     await fetch(`${API_BASE}/rag/documents/${id}`, { method: 'DELETE', headers: authHeaders() })
-    documents.value = documents.value.filter(d => d.id !== id)
-  } catch (e) {
-    alert('删除失败')
-  }
+    allDocuments.value = allDocuments.value.filter(d => d.id !== id)
+    totalCount.value = Math.max(0, totalCount.value - 1)
+  } catch (e) { alert('删除失败') }
 }
 
 function formatTime(t: string): string {
@@ -138,7 +159,6 @@ function formatTime(t: string): string {
   return t.replace('T', ' ').substring(0, 19)
 }
 
-// 模拟进度——真实上传在后端处理
 function simulateProgress() {
   progress.value = 0
   progressStep.value = '读取文件...'
@@ -151,11 +171,7 @@ function simulateProgress() {
   ]
   let i = 0
   const timer = setInterval(() => {
-    if (i < steps.length) {
-      progress.value = steps[i].p
-      progressStep.value = steps[i].text
-      i++
-    }
+    if (i < steps.length) { progress.value = steps[i].p; progressStep.value = steps[i].text; i++ }
   }, 600)
   return timer
 }
@@ -177,11 +193,9 @@ async function uploadFile(file: File) {
     uploadResult.value = { ok: false, error: '仅支持 PDF 文件' }
     return
   }
-
   currentFile.value = file
   uploading.value = true
   uploadResult.value = null
-
   const timer = simulateProgress()
 
   try {
@@ -195,7 +209,6 @@ async function uploadFile(file: File) {
 
     const resp = await fetch(`${API_BASE}/rag/upload`, { method: 'POST', headers, body: formData })
     const data = await resp.json()
-
     clearInterval(timer)
     progress.value = 100
     progressStep.value = '完成！'
@@ -236,7 +249,7 @@ h1 { font-size: 22px; margin-bottom: 4px; }
 .upload-meta { display: flex; gap: 8px; margin-top: 16px; justify-content: center; }
 .code-input {
   padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px;
-  font-size: 13px; width: 180px; outline: none;
+  font-size: 13px; width: 200px; outline: none;
 }
 .code-input:focus { border-color: #4a90d9; }
 .select-btn {
@@ -255,11 +268,19 @@ h1 { font-size: 22px; margin-bottom: 4px; }
 .result-msg.success { background: #e8f5e9; color: #2e7d32; }
 .result-msg.error { background: #fdecea; color: #c62828; }
 
+.doc-header { display: flex; align-items: center; justify-content: space-between; margin-top: 32px; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.doc-header h2 { font-size: 18px; margin: 0; }
+.doc-toolbar { display: flex; gap: 8px; align-items: center; }
+.search-input {
+  padding: 6px 12px; border: 1px solid #ddd; border-radius: 6px;
+  font-size: 13px; width: 220px; outline: none;
+}
+.search-input:focus { border-color: #4a90d9; }
+
 .doc-list { display: flex; flex-direction: column; gap: 8px; }
 .doc-card {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px;
-  background: #fff; border: 1px solid #eee; border-radius: 8px;
-  transition: 0.15s;
+  background: #fff; border: 1px solid #eee; border-radius: 8px; transition: 0.15s;
 }
 .doc-card:hover { border-color: #d0d0d0; }
 .doc-icon { font-size: 24px; }
@@ -275,6 +296,6 @@ h1 { font-size: 22px; margin-bottom: 4px; }
 .delete-btn:hover { opacity: 1; }
 
 .empty-docs { text-align: center; padding: 40px; color: #999; font-size: 14px; }
-.refresh-btn { margin-top: 16px; padding: 8px 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; transition: 0.2s; }
+.refresh-btn { padding: 6px 12px; border: 1px solid #ddd; border-radius: 6px; background: #fff; cursor: pointer; font-size: 13px; transition: 0.2s; }
 .refresh-btn:hover { border-color: #4a90d9; color: #4a90d9; }
 </style>
