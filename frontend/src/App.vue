@@ -7,7 +7,11 @@
       <router-link to="/dashboard" class="nav-item">📈 仪表盘</router-link>
     </nav>
     <main class="main-content">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <keep-alive>
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
   </div>
 </template>
