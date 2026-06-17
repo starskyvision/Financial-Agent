@@ -1,6 +1,7 @@
 import json
 import structlog
 from state import IntentResult
+from constants.metrics import MAX_HISTORY_TURNS
 from services.llm_service import get_llm_service
 from prompts.intent_classifier import INTENT_CLASSIFIER_SYSTEM
 
@@ -52,12 +53,36 @@ def _search_stock_code(name: str) -> str:
     return ""
 
 
+# 关键词强制路由：LLM 可能误判，关键词兜底
+_FINANCE_KEYWORDS = ["盈利能力", "财务状况", "偿债能力", "现金流分析", "利润率"]
+_COMPREHENSIVE_KEYWORDS = ["出份报告", "写份报告", "生成报告", "全面分析", "综合分析"]
+
+
+def _keyword_override(llm_intent: str, message: str) -> str:
+    """关键词兜底：避免 LLM 将简单财务分析误判为 comprehensive。"""
+    msg = message.lower()
+    has_finance = any(kw in msg for kw in _FINANCE_KEYWORDS)
+    has_report = any(kw in msg for kw in _COMPREHENSIVE_KEYWORDS)
+
+    if has_finance and not has_report and llm_intent == "comprehensive":
+        logger.info("intent_keyword_override", from_intent="comprehensive", to="financial_analysis")
+        return "financial_analysis"
+    return llm_intent
+
+
 async def classify_intent(message: str, history: list[dict] | None = None) -> IntentResult:
-    """LLM 分类意图 + 提取实体，AKShare 搜索兜底股票代码"""
+    """LLM 分类意图 + 提取实体，规则预处理 + 关键词兜底 + AKShare 搜索兜底股票代码"""
+    # 第零层：规则预处理 + RAG 查询改写（相对日期、股票别名、单位标准化、知识库实体注入、低置信度 LLM 改写）
+    from services.query_preprocessor import preprocess_with_rag, QueryRewriteError
+    try:
+        message = await preprocess_with_rag(message)
+    except QueryRewriteError:
+        raise  # propagate to main.py for user-facing error response
+
     llm = get_llm_service()
     messages = [{"role": "system", "content": INTENT_CLASSIFIER_SYSTEM}]
     if history:
-        messages.extend(history[-4:])
+        messages.extend(history[-MAX_HISTORY_TURNS:])
     messages.append({"role": "user", "content": message})
 
     result = await llm.invoke("intent_classifier", messages, response_format="json_object")
@@ -70,6 +95,10 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
             content = content[start:end]
 
         data = json.loads(content)
+        intent = data.get("intent", "comprehensive")
+        # ── 关键词兜底（LLM 可能误判 comprehensive） ──
+        intent = _keyword_override(intent, message)
+
         code = data.get("company_code", "")
         name = data.get("company_name", "")
 
@@ -87,7 +116,7 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
                 logger.info("stock_code_resolved_by_search", name=name, code=code)
 
         intent_result = IntentResult(
-            intent=data.get("intent", "comprehensive"),
+            intent=intent,
             company_code=code,
             company_name=name,
             report_date=data.get("report_date", ""),
@@ -101,4 +130,6 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
         return intent_result
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         logger.warning("intent_parse_error", error=str(e))
-        return IntentResult(intent="comprehensive", company_code="")
+        # ── 异常兜底：检查关键词决定降级策略 ──
+        fallback = _keyword_override("comprehensive", message)
+        return IntentResult(intent=fallback, company_code="")

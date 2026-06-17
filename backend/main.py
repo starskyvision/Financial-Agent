@@ -33,6 +33,18 @@ class TaskRequest(BaseModel):
 async def lifespan(app: FastAPI):
     logger.info("app_startup")
     yield
+    # Graceful shutdown: dispose shared DB engine and Redis client
+    try:
+        from services.db_utils import dispose_engine
+        await dispose_engine()
+    except Exception:
+        pass
+    try:
+        from services.task_queue.manager import _redis_client
+        if _redis_client is not None:
+            await _redis_client.close()
+    except Exception:
+        pass
     logger.info("app_shutdown")
 
 
@@ -87,13 +99,21 @@ async def chat(request: ChatRequest):
     logger.info("chat_request", task_id=task_id, message=request.message[:50])
 
     from agents.intent_classifier.classifier import classify_intent
+    from services.query_preprocessor import QueryRewriteError
     try:
         intent_result = await classify_intent(request.message)
+    except QueryRewriteError as e:
+        # User-friendly message from RAG query rewriting (e.g. "问题不够明确，请补充股票代码或公司名称")
+        err_text = str(e)
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'text': err_text})}\n\n"]),
+            media_type="text/event-stream"
+        )
     except Exception as e:
         logger.error("intent_classification_failed", error=str(e))
         err_text = f"Intent classification failed: {str(e)}"
         return StreamingResponse(
-            iter([f"data: {json.dumps({'error': err_text})}\n\n"]),
+            iter([f"data: {json.dumps({'text': err_text})}\n\n"]),
             media_type="text/event-stream"
         )
 
@@ -147,6 +167,13 @@ async def chat(request: ChatRequest):
             yield f"event: done\ndata: {done_data}\n\n"
         return StreamingResponse(hint_generator(), media_type="text/event-stream")
 
+    # comprehensive → 提交异步任务，返回 task_id 让前端走 /tasks/{id}/stream
+    if intent_result.intent == "comprehensive":
+        async_task_id = await TaskManager.submit(
+            intent_result.company_code, intent_result.report_date
+        )
+        return {"task_id": async_task_id, "status": "accepted"}
+
     state = make_initial_state(task_id)
     state["intent"] = intent_result.intent
     state["company_code"] = intent_result.company_code
@@ -189,24 +216,37 @@ async def get_task_status(task_id: str):
 async def stream_task_progress(task_id: str):
     async def event_generator():
         r = await get_redis()
-        pubsub = r.pubsub()
-        await pubsub.subscribe(f"task:{task_id}:events")
         try:
+            # 1. Emit current status first
             status = await TaskManager.get_status(task_id)
-            yield f"event: status\ndata: {json.dumps(status)}\n\n"
+            yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
+
+            # 2. Replay any historical progress events (for late subscribers)
+            history = await r.lrange(f"task:{task_id}:progress_log", 0, -1)
+            for entry in history:
+                yield f"data: {entry}\n\n"
+
+            # 3. If already done, exit
             if status.get("status") in ("done", "failed"):
                 return
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    yield f"data: {message['data']}\n\n"
-                    try:
-                        event_data = json.loads(message['data'])
-                        if event_data.get("type") in ("done", "failed"):
-                            break
-                    except json.JSONDecodeError:
-                        pass
+
+            # 4. Subscribe to live progress events
+            pubsub = r.pubsub()
+            await pubsub.subscribe(f"task:{task_id}:events")
+            try:
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        yield f"data: {message['data']}\n\n"
+                        try:
+                            event_data = json.loads(message['data'])
+                            if event_data.get("type") in ("done", "failed"):
+                                break
+                        except json.JSONDecodeError:
+                            pass
+            finally:
+                await pubsub.unsubscribe(f"task:{task_id}:events")
         finally:
-            await pubsub.unsubscribe(f"task:{task_id}:events")
+            pass  # get_redis() returns shared client, don't close
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -225,6 +265,7 @@ async def health():
         "status": "healthy",
         "redis": "unknown",
         "postgres": "unknown",
+        "pgvector": "unknown",
         "version": os.getenv("APP_VERSION", "1.0.0"),
     }
     # Redis
@@ -234,17 +275,29 @@ async def health():
         health_status["redis"] = "connected"
     except Exception:
         health_status["redis"] = "disconnected"
-    # PostgreSQL
+    # PostgreSQL + pgvector (synchronous check — lightweight, runs rarely)
     try:
         import psycopg2
-        conn = psycopg2.connect(
-            os.getenv("DATABASE_URL", "postgresql://financial_agent:financial_agent_2024@localhost:15432/financial_agent"),
-            connect_timeout=3,
-        )
-        conn.close()
-        health_status["postgres"] = "connected"
+        db_url = os.getenv("DATABASE_URL", "")
+        if not db_url:
+            health_status["postgres"] = "not_configured"
+        else:
+            conn = cur = None
+            try:
+                conn = psycopg2.connect(db_url, connect_timeout=3)
+                cur = conn.cursor()
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                has_vector = cur.fetchone() is not None
+                health_status["postgres"] = "connected"
+                health_status["pgvector"] = "connected" if has_vector else "not_installed"
+            finally:
+                if cur is not None:
+                    cur.close()
+                if conn is not None:
+                    conn.close()
     except Exception:
         health_status["postgres"] = "disconnected"
+        health_status["pgvector"] = "disconnected"
 
     return health_status
 
