@@ -42,6 +42,16 @@ def build_report_prompt(state: dict, retry_context: str = "") -> str:
     anomalies = fin.get("anomaly_flags", [])
     narrative = fin.get("narrative", "")
 
+    # 格式化杜邦数据——资产周转率为 0 时标注不可用，防止 LLM 幻觉
+    at_val = dupont.get('asset_turnover', 0)
+    at_display = f"{at_val:.4f}" if at_val and at_val > 0 else "N/A（总资产数据缺失，不可用）"
+    nm_val = dupont.get('net_margin', 0)
+    nm_display = f"{nm_val:.4f}" if nm_val and nm_val > 0 else "N/A"
+    roe_val = dupont.get('roe', 0)
+    roe_display = f"{roe_val:.4f}" if roe_val and roe_val > 0 else "N/A"
+    em_val = dupont.get('equity_multiplier', 0)
+    em_display = f"{em_val:.4f}" if em_val and em_val > 0 else "N/A"
+
     prompt = f"""请为 {name}（{code}）生成一份投研分析报告。
 
 ## 输入数据
@@ -50,10 +60,14 @@ def build_report_prompt(state: dict, retry_context: str = "") -> str:
 {narrative}
 
 ### 杜邦分解数据
-- ROE: {dupont.get('roe', 'N/A')}
-- 净利率: {dupont.get('net_margin', 'N/A')}
-- 资产周转率: {dupont.get('asset_turnover', 'N/A')}
-- 权益乘数: {dupont.get('equity_multiplier', 'N/A')}
+- ROE: {roe_display}
+- 净利率: {nm_display}
+- 资产周转率: {at_display}
+- 权益乘数: {em_display}
+
+**重要提示**：当资产周转率显示为 N/A 时，说明总资产数据缺失，杜邦公式 ROE = 净利率 × 资产周转率 × 权益乘数 无法闭合。
+请勿编造资产周转率数值，也不要基于缺失数据做"资产周转率低"之类的判断。
+ROE 直接来自数据源，分析时应聚焦净利率和权益乘数两个有效因子。
 
 ### 异动检测
 """
