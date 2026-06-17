@@ -1,44 +1,21 @@
 services:
-  # --- Milvus 向量数据库 ---
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.5
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-      - ETCD_QUOTA_BACKEND_BYTES=4294967296
-      - ETCD_SNAPSHOT_COUNT=50000
-    volumes:
-      - etcd_data:/etcd
-    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+  # --- PostgreSQL + pgvector ---
+  postgres:
+    image: pgvector/pgvector:pg16
     ports:
-      - "2379:2379"
-
-  minio:
-    image: minio/minio:latest
+      - "5432:5432"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      POSTGRES_USER: financial_agent
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-financial_agent_2024}
+      POSTGRES_DB: financial_agent
     volumes:
-      - minio_data:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-
-  milvus:
-    image: milvusdb/milvus:v2.5.0
-    command: ["milvus", "run", "standalone"]
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-    volumes:
-      - milvus_data:/var/lib/milvus
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    depends_on:
-      - etcd
-      - minio
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U financial_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # --- Redis ---
   redis:
@@ -49,21 +26,6 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
 
-  # --- MySQL ---
-  mysql:
-    image: mysql:8.0
-    ports:
-      - "3307:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: financial_agent_2024
-      MYSQL_DATABASE: financial_agent
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql
-
 volumes:
-  etcd_data:
-  minio_data:
-  milvus_data:
+  pgdata:
   redis_data:
-  mysql_data:

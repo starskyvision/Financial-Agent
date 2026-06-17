@@ -1,55 +1,81 @@
 -- ============================================
--- 金融多智能体协作系统 - 数据库初始化
+-- 金融多智能体协作系统 - 数据库初始化 (PostgreSQL)
 -- ============================================
 
-CREATE DATABASE IF NOT EXISTS financial_agent
-    DEFAULT CHARACTER SET utf8mb4
-    DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE financial_agent;
+-- 启用 pgvector 扩展
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 财务数据中心
 CREATE TABLE IF NOT EXISTS financial_data (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    company_code VARCHAR(10) NOT NULL COMMENT '股票代码',
-    report_date DATE NOT NULL COMMENT '报告期',
-    metric_name VARCHAR(64) NOT NULL COMMENT '指标名称',
-    metric_value DECIMAL(20, 4) COMMENT '指标值',
-    metric_unit VARCHAR(16) COMMENT '单位',
-    source VARCHAR(32) NOT NULL DEFAULT 'wind' COMMENT '数据来源 wind/pdf/llm',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_company_date (company_code, report_date),
-    INDEX idx_metric (metric_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='财务数据中心';
+    id BIGSERIAL PRIMARY KEY,
+    company_code VARCHAR(10) NOT NULL,
+    report_date DATE NOT NULL,
+    metric_name VARCHAR(64) NOT NULL,
+    metric_value NUMERIC(20, 4),
+    source VARCHAR(32) NOT NULL DEFAULT 'akshare',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fd_company_date ON financial_data (company_code, report_date);
+CREATE INDEX IF NOT EXISTS idx_fd_metric ON financial_data (metric_name);
 
--- 文档切片
+COMMENT ON TABLE financial_data IS '财务数据中心';
+COMMENT ON COLUMN financial_data.company_code IS '股票代码';
+COMMENT ON COLUMN financial_data.report_date IS '报告期';
+COMMENT ON COLUMN financial_data.metric_name IS '指标名称';
+COMMENT ON COLUMN financial_data.metric_value IS '指标值';
+COMMENT ON COLUMN financial_data.source IS '数据来源 akshare/tushare/wind';
+
+-- 文档切片（含向量）
 CREATE TABLE IF NOT EXISTS documents (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    company_code VARCHAR(10) NOT NULL COMMENT '关联股票',
-    doc_type VARCHAR(32) NOT NULL COMMENT '文档类型 report/announcement/transcript',
-    doc_title VARCHAR(256) COMMENT '文档标题',
-    chunk_index INT NOT NULL COMMENT '切片序号',
-    content TEXT NOT NULL COMMENT '原文内容',
-    content_zh TEXT COMMENT '中文摘要',
-    vector_id VARCHAR(64) COMMENT 'Milvus 向量 ID',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_company_doc (company_code, doc_type),
-    INDEX idx_vector (vector_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档切片';
+    id BIGSERIAL PRIMARY KEY,
+    company_code VARCHAR(10) NOT NULL,
+    doc_type VARCHAR(32) NOT NULL,
+    doc_title VARCHAR(256),
+    chunk_index INT NOT NULL DEFAULT 0,
+    content TEXT NOT NULL,
+    content_zh TEXT,
+    embedding vector(1024),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_docs_company ON documents (company_code, doc_type);
+CREATE INDEX IF NOT EXISTS idx_docs_embedding ON documents USING hnsw (embedding vector_cosine_ops);
+
+COMMENT ON TABLE documents IS '文档切片（含 pgvector 向量）';
+COMMENT ON COLUMN documents.company_code IS '关联股票代码';
+COMMENT ON COLUMN documents.doc_type IS '文档类型 report/announcement/transcript';
+COMMENT ON COLUMN documents.embedding IS 'BGE-M3 1024维向量';
 
 -- 任务记录
 CREATE TABLE IF NOT EXISTS tasks (
-    id VARCHAR(36) PRIMARY KEY COMMENT '任务 UUID',
-    company_code VARCHAR(10) NOT NULL COMMENT '目标股票',
-    company_name VARCHAR(64) COMMENT '公司名称',
-    report_date DATE COMMENT '报告期',
-    status ENUM('pending', 'running', 'done', 'failed') NOT NULL DEFAULT 'pending',
-    progress INT DEFAULT 0 COMMENT '进度 0-100',
-    result JSON COMMENT '结果摘要',
-    error_log TEXT COMMENT '错误日志',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_status (status),
-    INDEX idx_company (company_code),
-    INDEX idx_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务记录';
+    id VARCHAR(36) PRIMARY KEY,
+    company_code VARCHAR(10) NOT NULL,
+    company_name VARCHAR(64),
+    report_date DATE,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    progress INT DEFAULT 0,
+    result JSONB,
+    error_log TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks (company_code);
+CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks (created_at);
+
+COMMENT ON TABLE tasks IS '任务记录';
+COMMENT ON COLUMN tasks.progress IS '进度 0-100';
+
+-- 更新触发器：tasks.updated_at 自动更新
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tasks_updated_at ON tasks;
+CREATE TRIGGER trg_tasks_updated_at
+    BEFORE UPDATE ON tasks
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -3,7 +3,7 @@ import json
 import uuid
 import structlog
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     logger.info("app_shutdown")
 
 
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
 
 app = FastAPI(title="金融多智能体协作系统", version="0.1.0", lifespan=lifespan)
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
@@ -217,8 +217,8 @@ async def health():
     health_status = {
         "status": "healthy",
         "redis": "unknown",
-        "mysql": "unknown",
-        "milvus": "unknown",
+        "postgres": "unknown",
+        "version": os.getenv("APP_VERSION", "1.0.0"),
     }
     # Redis
     try:
@@ -227,32 +227,17 @@ async def health():
         health_status["redis"] = "connected"
     except Exception:
         health_status["redis"] = "disconnected"
-    # MySQL
+    # PostgreSQL
     try:
-        import os, pymysql
-        conn = pymysql.connect(
-            host=os.getenv("MYSQL_HOST", "localhost"),
-            port=int(os.getenv("MYSQL_PORT", "3307")),
-            user=os.getenv("MYSQL_USER", "root"),
-            password=os.getenv("MYSQL_PASSWORD", ""),
-            database=os.getenv("MYSQL_DATABASE", "financial_agent"),
+        import psycopg2
+        conn = psycopg2.connect(
+            os.getenv("DATABASE_URL", "postgresql://financial_agent@localhost:5432/financial_agent"),
             connect_timeout=3,
         )
-        conn.ping()
         conn.close()
-        health_status["mysql"] = "connected"
+        health_status["postgres"] = "connected"
     except Exception:
-        health_status["mysql"] = "disconnected"
-    # Milvus
-    try:
-        from pymilvus import connections
-        m_host = os.getenv("MILVUS_HOST", "localhost")
-        m_port = os.getenv("MILVUS_PORT", "19530")
-        connections.connect(host=m_host, port=m_port, timeout=3)
-        connections.disconnect("default")
-        health_status["milvus"] = "connected"
-    except Exception:
-        health_status["milvus"] = "disconnected"
+        health_status["postgres"] = "disconnected"
 
     return health_status
 
