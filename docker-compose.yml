@@ -1,9 +1,9 @@
 services:
   # --- PostgreSQL + pgvector ---
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine  # TODO: switch to pgvector/pgvector:pg16 when network available
     ports:
-      - "5432:5432"
+      - "15432:5432"
     environment:
       POSTGRES_USER: financial_agent
       POSTGRES_PASSWORD: ${PG_PASSWORD:-financial_agent_2024}

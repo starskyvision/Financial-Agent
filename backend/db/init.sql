@@ -2,8 +2,13 @@
 -- 金融多智能体协作系统 - 数据库初始化 (PostgreSQL)
 -- ============================================
 
--- 启用 pgvector 扩展
-CREATE EXTENSION IF NOT EXISTS vector;
+-- 启用 pgvector 扩展（pgvector/pgvector 镜像自带，标准 postgres 需手动安装）
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS vector;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pgvector extension not available — vector search disabled';
+END $$;
 
 -- 财务数据中心
 CREATE TABLE IF NOT EXISTS financial_data (
@@ -25,7 +30,7 @@ COMMENT ON COLUMN financial_data.metric_name IS '指标名称';
 COMMENT ON COLUMN financial_data.metric_value IS '指标值';
 COMMENT ON COLUMN financial_data.source IS '数据来源 akshare/tushare/wind';
 
--- 文档切片（含向量）
+-- 文档切片
 CREATE TABLE IF NOT EXISTS documents (
     id BIGSERIAL PRIMARY KEY,
     company_code VARCHAR(10) NOT NULL,
@@ -34,16 +39,23 @@ CREATE TABLE IF NOT EXISTS documents (
     chunk_index INT NOT NULL DEFAULT 0,
     content TEXT NOT NULL,
     content_zh TEXT,
-    embedding vector(1024),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_docs_company ON documents (company_code, doc_type);
-CREATE INDEX IF NOT EXISTS idx_docs_embedding ON documents USING hnsw (embedding vector_cosine_ops);
 
-COMMENT ON TABLE documents IS '文档切片（含 pgvector 向量）';
+COMMENT ON TABLE documents IS '文档切片';
 COMMENT ON COLUMN documents.company_code IS '关联股票代码';
 COMMENT ON COLUMN documents.doc_type IS '文档类型 report/announcement/transcript';
-COMMENT ON COLUMN documents.embedding IS 'BGE-M3 1024维向量';
+
+-- 向量列 + 索引（仅 pgvector 扩展可用时添加）
+DO $$
+BEGIN
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS embedding vector(1024);
+    CREATE INDEX IF NOT EXISTS idx_docs_embedding ON documents USING hnsw (embedding vector_cosine_ops);
+    COMMENT ON COLUMN documents.embedding IS 'BGE-M3 1024维向量';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pgvector not available — vector column skipped';
+END $$;
 
 -- 任务记录
 CREATE TABLE IF NOT EXISTS tasks (
