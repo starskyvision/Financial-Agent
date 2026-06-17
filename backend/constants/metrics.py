@@ -97,3 +97,34 @@ FACT_CHECK_MAP = {
 
 # NOTE: is_percent_metric / is_billion_metric removed — callers use
 # PERCENT_FORMAT_METRICS directly. See akshare_adapter.py for parse helpers.
+
+# ============================================================
+# 共享阈值与限制常量（所有模块单一真相源）
+# ============================================================
+
+# Dupont 分析
+ROE_DEVIATION_TOLERANCE = 0.05  # ROE 公式闭合偏差 > 5% 标记不一致
+
+# 异常检测
+ANOMALY_MEDIUM_CONFIDENCE_THRESHOLD = 3  # 超过此数量的异常 → medium 置信度
+
+# 数据拉取
+MAX_NEWS_FETCH = 30       # AKShare 单次最多拉取新闻条数
+NEWS_MAX_LENGTH = 200     # 新闻摘要截断长度
+MAX_NEWS_PER_BATCH = 30   # 舆情分析单批最多处理的新闻数
+NEWS_SUMMARY_TRUNCATE = 100  # 舆情分析中摘要截断长度
+
+# RAG 检索
+RAG_TOP_K_DEFAULT = 5     # RAG 检索默认 top-k
+RAG_CONTENT_TRUNCATE = 2000  # RAG 检索结果内容截断长度（完整段落）
+
+# 输出格式化
+OUTPUT_NEWS_DETAIL_LIMIT = 5  # 输出节点最多展示的新闻明细数
+
+# 意图分类
+MAX_HISTORY_TURNS = 4     # 意图分类携带的历史轮数
+
+# 检索增强改写
+RAG_REWRITE_THRESHOLD = 0.5   # top-1 相似度低于此值触发 LLM 改写
+RAG_REWRITE_TOP_K = 3         # 检索增强所用的文档数
+LLM_REWRITE_TIMEOUT = 3.0     # LLM 改写超时（秒）
