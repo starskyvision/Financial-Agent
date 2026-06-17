@@ -1,5 +1,5 @@
 import os
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
 API_KEY = os.getenv("API_KEY", "")
@@ -28,6 +28,6 @@ async def auth_middleware(request: Request, call_next):
     # 校验 API Key
     key = request.headers.get("X-API-Key", "")
     if key != API_KEY:
-        raise HTTPException(status_code=401, detail="invalid api key")
+        return JSONResponse(status_code=401, content={"error": "invalid api key"})
 
     return await call_next(request)

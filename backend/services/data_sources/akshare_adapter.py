@@ -61,6 +61,8 @@ class AKShareAdapter(DataSourceAdapter):
     def __init__(self, config: DataSourceConfig):
         self.config = config
         self._client: httpx.AsyncClient | None = None
+        from services.circuit_breaker import CircuitBreaker
+        self._cb = CircuitBreaker("akshare", failure_threshold=3, recovery_timeout=60)
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -111,11 +113,16 @@ class AKShareAdapter(DataSourceAdapter):
 
     async def fetch_financials(self, code: str, date: str, metrics: list[str]) -> dict:
         if self._is_us_stock(code):
-            # 美股暂无 AKShare 财报 API，返回空字典让 LLM 接管
             logger.info("us_stock_financials_unavailable", code=code)
             return {}
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_financials_start", code=code, date=date, requested=metrics)
+        try:
+            return await self._cb.call(self._fetch_financials_impl(code, date, metrics))
+        except Exception:
+            return {}
+
+    async def _fetch_financials_impl(self, code: str, date: str, metrics: list[str]) -> dict:
         try:
             if self._is_hk_stock(code):
                 result = await self._fetch_hk_financials(code, metrics)
@@ -133,6 +140,12 @@ class AKShareAdapter(DataSourceAdapter):
     async def fetch_news(self, code: str, days: int) -> list[dict]:
         code = normalize_stock_code(code)
         logger.info("akshare_fetch_news_start", code=code, days=days)
+        try:
+            return await self._cb.call(self._fetch_news_impl(code, days))
+        except Exception:
+            return []
+
+    async def _fetch_news_impl(self, code: str, days: int) -> list[dict]:
         try:
             df = ak.stock_news_em(symbol=code)
             if df is None or df.empty:
@@ -168,6 +181,12 @@ class AKShareAdapter(DataSourceAdapter):
 
     async def fetch_market_data(self, query_type: str, target: str = "") -> dict:
         """拉取市场行情数据。根据 query_type 选择合适的 AKShare API，用 target 搜索匹配项。"""
+        try:
+            return await self._cb.call(self._fetch_market_data_impl(query_type, target))
+        except Exception:
+            return {}
+
+    async def _fetch_market_data_impl(self, query_type: str, target: str = "") -> dict:
         try:
             # --- 汇率 ---
             if query_type == "exchange_rate":

@@ -49,6 +49,8 @@ class LLMService:
         self._primary: AsyncOpenAI | None = None
         self._fallback: AsyncOpenAI | None = None
         self._rate_limiter = SimpleRateLimiter(max_calls_per_minute=30)
+        from services.circuit_breaker import CircuitBreaker
+        self._cb = CircuitBreaker("deepseek_llm", failure_threshold=3, recovery_timeout=30)
 
     def _ensure_clients(self):
         """Lazy init — only create API clients when first actually used."""
@@ -89,7 +91,7 @@ class LLMService:
                 if response_format:
                     kwargs["response_format"] = {"type": "json_object"}
 
-                resp = await self._primary.chat.completions.create(**kwargs)
+                resp = await self._cb.call(self._primary.chat.completions.create(**kwargs))
                 elapsed = (time.time() - t0) * 1000
                 choice = resp.choices[0]
 
