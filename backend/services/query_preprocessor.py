@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import structlog
 from datetime import datetime
+
+from services.llm_service import get_llm_service
 
 logger = structlog.get_logger()
 
@@ -60,6 +63,95 @@ def _should_llm_rewrite(retrieved: list[dict], threshold: float) -> bool:
         return True
     top_score = retrieved[0].get("score", 0) if retrieved else 0
     return top_score < threshold
+
+
+# ── LLM 改写 ──
+
+class QueryRewriteError(Exception):
+    """查询改写失败——向用户返回提示，不降级到原 query。"""
+
+
+_REWRITE_SYSTEM_PROMPT = """你是一个金融查询改写助手。用户的问题可能简短模糊。基于知识库中检索到的参考信息，将用户问题改写为精确、具体、包含关键实体（股票代码、指标名、时间）的查询。
+
+规则：
+1. 保留用户原意，仅补充缺失的关键信息
+2. 如果检索信息不足以判断，不要编造
+3. 直接输出改写后的查询，不要加解释
+4. 输出长度不超过 100 字
+
+示例：
+原问题: 茅台怎么样
+参考信息: 贵州茅台(600519)2024Q3 ROE=10.1% 净利率=52.2%
+改写: 分析贵州茅台(600519)2024Q3的盈利能力和财务表现"""
+
+
+async def _llm_rewrite_query(
+    original: str,
+    retrieved: list[dict],
+    timeout: float = 3.0,
+) -> str:
+    """用 LLM 改写模糊查询。
+
+    Args:
+        original: 原始用户输入
+        retrieved: RAG 检索结果列表
+        timeout: LLM 调用超时（秒）
+
+    Returns:
+        改写后的查询字符串
+
+    Raises:
+        QueryRewriteError: LLM 调用失败或返回空结果
+    """
+    # 拼接检索片段
+    doc_parts: list[str] = []
+    for i, doc in enumerate(retrieved[:3], 1):
+        content = doc.get("content", "")[:500]
+        title = doc.get("doc_title", "")
+        header = f"[文档{i}]" + (f" {title}" if title else "")
+        doc_parts.append(f"{header}\n{content}")
+    doc_text = "\n\n---\n\n".join(doc_parts) if doc_parts else "（无参考信息）"
+
+    user_prompt = (
+        f"原问题: {original}\n\n"
+        f"知识库参考信息:\n{doc_text}\n\n"
+        f"请改写上述问题。"
+    )
+
+    try:
+        llm = get_llm_service()
+        result = await asyncio.wait_for(
+            llm.invoke("default", [
+                {"role": "system", "content": _REWRITE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]),
+            timeout=timeout,
+        )
+        rewritten = (result.get("content", "") or "").strip()
+
+        if not rewritten or len(rewritten) < 4:
+            raise QueryRewriteError(
+                "问题不够明确，请补充股票代码或公司名称，"
+                "例如'分析茅台2024Q3的盈利能力'"
+            )
+
+        logger.info("query_rewritten", original=original[:60], rewritten=rewritten[:80])
+        return rewritten
+
+    except QueryRewriteError:
+        raise
+    except asyncio.TimeoutError:
+        logger.error("llm_rewrite_timeout", original=original[:60])
+        raise QueryRewriteError(
+            "问题不够明确，请补充股票代码或公司名称，"
+            "例如'分析茅台2024Q3的盈利能力'"
+        )
+    except Exception as exc:
+        logger.error("llm_rewrite_failed", original=original[:60], error=str(exc))
+        raise QueryRewriteError(
+            "问题不够明确，请补充股票代码或公司名称，"
+            "例如'分析茅台2024Q3的盈利能力'"
+        )
 
 
 # ══════════════════════════════════════════════════

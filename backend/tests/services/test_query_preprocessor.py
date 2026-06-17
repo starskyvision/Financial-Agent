@@ -97,3 +97,59 @@ class TestConfidenceGate:
         from services.query_preprocessor import _should_llm_rewrite
         assert _should_llm_rewrite([{"score": 0.5}], 0.5) is False
         assert _should_llm_rewrite([{"score": 0.78}], 0.5) is False
+
+
+class TestLLMRewrite:
+    @patch("services.query_preprocessor.get_llm_service")
+    def test_rewrite_returns_content(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_llm.invoke = AsyncMock(return_value={
+            "content": "分析贵州茅台(600519)的盈利能力",
+        })
+        mock_get_llm.return_value = mock_llm
+
+        from services.query_preprocessor import _llm_rewrite_query
+
+        async def run():
+            return await _llm_rewrite_query(
+                "茅台怎么样",
+                [{"content": "贵州茅台(600519) ROE=10.1%", "company_code": "600519", "score": 0.3}],
+            )
+
+        result = asyncio.run(run())
+        assert "600519" in result
+
+    @patch("services.query_preprocessor.get_llm_service")
+    def test_rewrite_raises_on_llm_failure(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_llm.invoke = AsyncMock(side_effect=Exception("API error"))
+        mock_get_llm.return_value = mock_llm
+
+        from services.query_preprocessor import _llm_rewrite_query, QueryRewriteError
+
+        async def run():
+            return await _llm_rewrite_query(
+                "茅台怎么样",
+                [{"content": "...", "company_code": "600519", "score": 0.3}],
+            )
+
+        with pytest.raises(QueryRewriteError) as exc_info:
+            asyncio.run(run())
+        assert "问题不够明确" in str(exc_info.value)
+
+    @patch("services.query_preprocessor.get_llm_service")
+    def test_rewrite_raises_on_empty_response(self, mock_get_llm):
+        mock_llm = MagicMock()
+        mock_llm.invoke = AsyncMock(return_value={"content": ""})
+        mock_get_llm.return_value = mock_llm
+
+        from services.query_preprocessor import _llm_rewrite_query, QueryRewriteError
+
+        async def run():
+            return await _llm_rewrite_query(
+                "xyz",
+                [{"content": "...", "company_code": "", "score": 0.1}],
+            )
+
+        with pytest.raises(QueryRewriteError):
+            asyncio.run(run())
