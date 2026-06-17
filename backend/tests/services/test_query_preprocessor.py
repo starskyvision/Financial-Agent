@@ -153,3 +153,60 @@ class TestLLMRewrite:
 
         with pytest.raises(QueryRewriteError):
             asyncio.run(run())
+
+
+class TestPreprocessWithRag:
+    @patch("services.rag.search.search_rag")
+    @patch("services.query_preprocessor.get_llm_service")
+    def test_high_confidence_skips_llm(self, mock_llm, mock_search):
+        """top-1 score >= 0.5 -> rule injection only, no LLM call."""
+        mock_search.return_value = [
+            {"content": "贵州茅台(600519) ROE=10.1% 净利率=52.2% 2024-03-31",
+             "company_code": "600519", "score": 0.78, "doc_title": "茅台研报"},
+        ]
+
+        from services.query_preprocessor import preprocess_with_rag
+
+        async def run():
+            return await preprocess_with_rag("茅台盈利能力")
+
+        result = asyncio.run(run())
+        # Should have entity injection
+        assert "补充信息" in result
+        # LLM should NOT have been called
+        mock_llm.assert_not_called()
+
+    @patch("services.rag.search.search_rag")
+    @patch("services.query_preprocessor.get_llm_service")
+    def test_low_confidence_triggers_llm(self, mock_llm, mock_search):
+        """top-1 score < 0.5 -> LLM rewrite triggered."""
+        mock_search.return_value = [
+            {"content": "some vague doc", "company_code": "", "score": 0.2, "doc_title": "x"},
+        ]
+        mock_llm_obj = MagicMock()
+        mock_llm_obj.invoke = AsyncMock(return_value={
+            "content": "分析贵州茅台(600519)的盈利能力",
+        })
+        mock_llm.return_value = mock_llm_obj
+
+        from services.query_preprocessor import preprocess_with_rag
+
+        async def run():
+            return await preprocess_with_rag("茅台怎么样")
+
+        result = asyncio.run(run())
+        assert "600519" in result
+        mock_llm_obj.invoke.assert_called_once()
+
+    @patch("services.rag.search.search_rag")
+    def test_rag_failure_raises_rewrite_error(self, mock_search):
+        """RAG fails -> no results -> LLM rewrite not available -> error."""
+        mock_search.side_effect = Exception("DB connection refused")
+
+        from services.query_preprocessor import preprocess_with_rag, QueryRewriteError
+
+        async def run():
+            return await preprocess_with_rag("xyz123")
+
+        with pytest.raises(QueryRewriteError):
+            asyncio.run(run())

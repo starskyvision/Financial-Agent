@@ -401,3 +401,59 @@ def preprocess(text: str, steps: list[str] | None = None) -> str:
     if result != text:
         logger.info("query_preprocessed", original=text[:80], cleaned=result[:80])
     return result
+
+
+# ── 异步 RAG 增强管线 ──
+
+async def preprocess_with_rag(
+    text: str,
+    threshold: float | None = None,
+    top_k: int | None = None,
+) -> str:
+    """对用户查询执行检索增强的预处理。
+
+    管线顺序:
+      1. 同步规则预处理（日期、别名、空白）
+      2. RAG 检索 top-k 文档
+      3. 规则实体注入
+      4. 置信度检查 → LLM 改写（如需要）
+
+    Args:
+        text: 原始用户输入
+        threshold: 触发 LLM 改写的相似度阈值，默认 RAG_REWRITE_THRESHOLD
+        top_k: RAG 检索文档数，默认 RAG_REWRITE_TOP_K
+
+    Returns:
+        处理后的查询字符串
+
+    Raises:
+        QueryRewriteError: LLM 改写失败且不应降级
+    """
+    from constants.metrics import RAG_REWRITE_THRESHOLD, RAG_REWRITE_TOP_K
+
+    if threshold is None:
+        threshold = RAG_REWRITE_THRESHOLD
+    if top_k is None:
+        top_k = RAG_REWRITE_TOP_K
+
+    # Step 1: Rule preprocessing (sync)
+    cleaned = preprocess(text, steps=[
+        "normalize_whitespace", "resolve_dates", "normalize_names",
+    ])
+
+    # Step 2: RAG retrieval
+    retrieved = await _retrieve_context(cleaned, top_k=top_k)
+
+    # Step 3: Entity injection
+    injected = _inject_retrieved_entities(cleaned, retrieved)
+
+    # Step 4: Confidence gate -> LLM rewrite
+    if _should_llm_rewrite(retrieved, threshold):
+        rewritten = await _llm_rewrite_query(cleaned, retrieved)
+        logger.info("query_rag_rewrite", original=text[:60],
+                    injected=injected[:60], rewritten=rewritten[:60])
+        return rewritten
+
+    logger.info("query_rag_entity_inject", original=text[:60],
+                num_docs=len(retrieved), result=injected[:80])
+    return injected
