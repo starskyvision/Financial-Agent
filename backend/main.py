@@ -236,7 +236,7 @@ async def health():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            os.getenv("DATABASE_URL", "postgresql://financial_agent@localhost:5432/financial_agent"),
+            os.getenv("DATABASE_URL", "postgresql://financial_agent:financial_agent_2024@localhost:15432/financial_agent"),
             connect_timeout=3,
         )
         conn.close()
