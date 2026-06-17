@@ -1,47 +1,67 @@
 <template>
-  <div class="chat-container">
-    <div class="chat-messages" ref="msgContainer">
-      <div v-if="messages.length === 0" class="empty-state">
-        <h2>金融投研智能 Copilot</h2>
-        <p>输入股票代码或公司名称，快速获取财务分析、舆情解读或投研报告。</p>
-        <div class="examples">
-          <button v-for="q in quickQuestions" :key="q" @click="sendMessage(q)">{{ q }}</button>
+  <div class="chat-layout">
+    <!-- 会话列表侧边栏 -->
+    <aside class="conv-sidebar">
+      <button class="new-conv-btn" @click="newConversation">＋ 新对话</button>
+      <div class="conv-list">
+        <div
+          v-for="conv in conversations"
+          :key="conv.id"
+          :class="['conv-item', { active: conv.id === activeId }]"
+          @click="switchConversation(conv.id)"
+        >
+          <div class="conv-title">{{ conv.title || '新对话' }}</div>
+          <div class="conv-time">{{ conv.time }}</div>
+        </div>
+      </div>
+      <div v-if="conversations.length === 0" class="no-convs">暂无历史对话</div>
+    </aside>
+
+    <!-- 对话区域 -->
+    <div class="chat-main">
+      <div class="chat-messages" ref="msgContainer">
+        <div v-if="activeMessages.length === 0" class="empty-state">
+          <h2>金融投研智能 Copilot</h2>
+          <p>输入股票代码或公司名称，快速获取财务分析、舆情解读或投研报告。</p>
+          <div class="examples">
+            <button v-for="q in quickQuestions" :key="q" @click="sendMessage(q)">{{ q }}</button>
+          </div>
+        </div>
+
+        <div v-for="(msg, i) in activeMessages" :key="i" :class="['message', msg.role]">
+          <div class="avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
+          <div class="bubble">
+            <div v-if="msg.intent" class="intent-tag">{{ intentLabel(msg.intent) }}</div>
+            <div class="content" v-html="renderMarkdown(msg.content)" />
+            <div v-if="msg.streaming" class="typing-indicator">
+              <span></span><span></span><span></span>
+            </div>
+            <div v-if="msg.sources?.length" class="sources">
+              来源: {{ msg.sources.join(', ') }}
+            </div>
+          </div>
         </div>
       </div>
 
-      <div v-for="(msg, i) in messages" :key="i" :class="['message', msg.role]">
-        <div class="avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
-        <div class="bubble">
-          <div v-if="msg.intent" class="intent-tag">{{ intentLabel(msg.intent) }}</div>
-          <div class="content" v-html="renderMarkdown(msg.content)" />
-          <div v-if="msg.streaming" class="typing-indicator">
-            <span></span><span></span><span></span>
-          </div>
-          <div v-if="msg.sources?.length" class="sources">
-            来源: {{ msg.sources.join(', ') }}
-          </div>
-        </div>
+      <div class="chat-input">
+        <textarea
+          v-model="input"
+          @keydown.enter.exact.prevent="sendMessage(input)"
+          @keydown.shift.enter="input += '\n'"
+          placeholder="输入问题，如：分析茅台2024Q3的盈利能力..."
+          rows="2"
+          :disabled="loading"
+        />
+        <button @click="sendMessage(input)" :disabled="loading || !input.trim()">
+          {{ loading ? '⏳' : '➤' }}
+        </button>
       </div>
-    </div>
-
-    <div class="chat-input">
-      <textarea
-        v-model="input"
-        @keydown.enter.exact.prevent="sendMessage(input)"
-        @keydown.shift.enter="input += '\n'"
-        placeholder="输入问题，如：分析茅台2024Q3的盈利能力..."
-        rows="2"
-        :disabled="loading"
-      />
-      <button @click="sendMessage(input)" :disabled="loading || !input.trim()">
-        {{ loading ? '⏳' : '➤' }}
-      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { marked } from 'marked'
 import { postChat } from '@/api/chat'
 
@@ -54,9 +74,18 @@ interface Message {
   taskId?: string
 }
 
+interface Conversation {
+  id: number
+  title: string
+  time: string
+  messages: Message[]
+}
+
+let nextId = 1
+const conversations = ref<Conversation[]>([])
+const activeId = ref(0)
 const input = ref('')
 const loading = ref(false)
-const messages = ref<Message[]>([])
 const msgContainer = ref<HTMLElement>()
 
 const quickQuestions = [
@@ -64,6 +93,37 @@ const quickQuestions = [
   '宁德时代最近有什么新闻',
   '全面分析比亚迪并出份报告',
 ]
+
+const activeMessages = computed(() => {
+  const conv = conversations.value.find(c => c.id === activeId.value)
+  return conv ? conv.messages : []
+})
+
+function newConversation() {
+  // 如果当前会话为空，不创建新的
+  if (activeMessages.value.length === 0 && conversations.value.length > 0) {
+    return
+  }
+  const id = nextId++
+  const now = new Date()
+  conversations.value.unshift({
+    id,
+    title: '',
+    time: `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`,
+    messages: [],
+  })
+  activeId.value = id
+}
+
+function switchConversation(id: number) {
+  activeId.value = id
+}
+
+function ensureActiveConv() {
+  if (conversations.value.length === 0) {
+    newConversation()
+  }
+}
 
 function renderMarkdown(text: string): string {
   return marked.parse(text, { breaks: true }) as string
@@ -83,12 +143,20 @@ async function sendMessage(text: string) {
   const trimmed = text.trim()
   if (!trimmed || loading.value) return
 
+  ensureActiveConv()
+  const conv = conversations.value.find(c => c.id === activeId.value)!
+
+  // 自动标题：第一句用户消息的前 20 字
+  if (!conv.title) {
+    conv.title = trimmed.slice(0, 20) + (trimmed.length > 20 ? '…' : '')
+  }
+
   input.value = ''
   loading.value = true
 
-  messages.value.push({ role: 'user', content: trimmed })
+  conv.messages.push({ role: 'user', content: trimmed })
   const aiMsg: Message = { role: 'assistant', content: '', streaming: true, intent: '' }
-  messages.value.push(aiMsg)
+  conv.messages.push(aiMsg)
   await scrollBottom()
 
   await postChat(
@@ -116,8 +184,35 @@ async function scrollBottom() {
 </script>
 
 <style scoped>
-.chat-container { display: flex; flex-direction: column; height: calc(100vh - 48px); max-width: 900px; margin: 0 auto; }
-.chat-messages { flex: 1; overflow-y: auto; padding: 20px 0; }
+.chat-layout { display: flex; height: calc(100vh - 48px); max-width: 1100px; margin: 0 auto; }
+
+/* --- 侧边栏 --- */
+.conv-sidebar {
+  width: 220px; flex-shrink: 0; border-right: 1px solid #eee; padding: 16px 12px;
+  display: flex; flex-direction: column; overflow-y: auto; background: #fafbfc;
+}
+.new-conv-btn {
+  width: 100%; padding: 10px; border: 1px dashed #4a90d9; border-radius: 8px;
+  background: #fff; color: #4a90d9; font-size: 14px; cursor: pointer;
+  transition: 0.2s; margin-bottom: 12px;
+}
+.new-conv-btn:hover { background: #e8f0fe; }
+
+.conv-list { flex: 1; overflow-y: auto; }
+.conv-item {
+  padding: 10px 12px; border-radius: 6px; cursor: pointer;
+  margin-bottom: 4px; transition: 0.15s;
+}
+.conv-item:hover { background: #e8e8e8; }
+.conv-item.active { background: #e8f0fe; }
+
+.conv-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #333; }
+.conv-time { font-size: 11px; color: #999; margin-top: 2px; }
+.no-convs { font-size: 13px; color: #999; text-align: center; margin-top: 40px; }
+
+/* --- 对话区 --- */
+.chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 20px 24px; }
 .empty-state { text-align: center; padding: 80px 20px 0; }
 .empty-state h2 { font-size: 24px; margin-bottom: 12px; }
 .empty-state p { color: #666; margin-bottom: 24px; }
@@ -151,7 +246,7 @@ async function scrollBottom() {
 
 .sources { font-size: 11px; color: #999; margin-top: 8px; border-top: 1px solid #eee; padding-top: 6px; }
 
-.chat-input { display: flex; gap: 8px; padding: 16px 0; border-top: 1px solid #eee; background: #f5f7fa; }
+.chat-input { display: flex; gap: 8px; padding: 16px 24px; border-top: 1px solid #eee; background: #f5f7fa; }
 .chat-input textarea { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; resize: none; outline: none; font-family: inherit; }
 .chat-input textarea:focus { border-color: #4a90d9; }
 .chat-input button { width: 44px; height: 44px; border: none; border-radius: 8px; background: #4a90d9; color: #fff; font-size: 18px; cursor: pointer; flex-shrink: 0; }
