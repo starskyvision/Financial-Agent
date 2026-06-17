@@ -11,7 +11,7 @@ class Embedder:
     def __init__(self, model_path: str | None = None):
         path = model_path or RAGConfig.model_path
         logger.info("embedder_loading", model_path=path)
-        self.model = SentenceTransformer(path)
+        self.model = SentenceTransformer(path, device="cpu")
         self.dim = RAGConfig.embedding_dim
         logger.info("embedder_loaded", dim=self.dim)
 

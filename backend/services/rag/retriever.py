@@ -21,9 +21,11 @@ class Retriever:
         """语义检索文档切片。pgvector 不可用时返回空列表。"""
         k = top_k or self.top_k
         query_vec = self.embedder.embed_query(query)
+        # pgvector/asyncpg requires vector as formatted string: '[0.1,0.2,...]'
+        vec_str = "[" + ",".join(f"{v:.8f}" for v in query_vec) + "]"
 
         conditions = ["embedding IS NOT NULL"]
-        params = {"query_vec": query_vec, "k": k}
+        params = {"query_vec": vec_str, "k": k}
 
         if company_code:
             conditions.append("company_code = :company_code")
@@ -36,10 +38,10 @@ class Retriever:
 
         sql = text(f"""
             SELECT id, company_code, doc_type, doc_title, content, content_zh,
-                   1 - (embedding <=> :query_vec) AS score
+                   1 - (embedding <=> CAST(:query_vec AS vector)) AS score
             FROM documents
             WHERE {where_clause}
-            ORDER BY embedding <=> :query_vec
+            ORDER BY embedding <=> CAST(:query_vec AS vector)
             LIMIT :k
         """)
 
