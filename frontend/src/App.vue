@@ -3,6 +3,7 @@
     <nav class="sidebar">
       <div class="logo">📊 金融Agent</div>
       <router-link to="/" class="nav-item">💬 对话</router-link>
+      <router-link to="/rag" class="nav-item">📚 知识库</router-link>
       <router-link to="/dashboard" class="nav-item">📈 仪表盘</router-link>
     </nav>
     <main class="main-content">
