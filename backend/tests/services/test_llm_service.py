@@ -49,11 +49,10 @@ class TestLLMService:
             assert result["model"] == "deepseek-chat"
 
     @pytest.mark.asyncio
-    async def test_invoke_returns_empty_on_exhausted(self, svc):
+    async def test_invoke_raises_on_exhausted(self, svc):
         # Mock _ensure_clients to avoid re-init + simulate primary always failing
         svc._fallback = None  # disable fallback
         with patch.object(svc._primary.chat.completions, "create",
                           side_effect=Exception("always fails")):
-            result = await svc.invoke("default", [{"role": "user", "content": "hello"}])
-            assert result["content"] == ""
-            assert result["model"] == "none"
+            with pytest.raises(RuntimeError, match="LLM call exhausted"):
+                await svc.invoke("default", [{"role": "user", "content": "hello"}])

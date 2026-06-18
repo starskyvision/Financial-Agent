@@ -31,43 +31,51 @@ def _load_stock_list() -> list[dict]:
 
 
 def _search_stock_code(name: str) -> str:
-    """在 A 股列表中按名称模糊搜索股票代码"""
+    """在 A 股列表中按名称搜索股票代码——精确→包含→模糊匹配三级兜底。"""
     if not name:
         return ""
     try:
         stocks = _load_stock_list()
         name_lower = name.strip().lower()
-        # 精确匹配
+
+        # L1: 精确匹配
         for s in stocks:
             if s["name"].lower() == name_lower:
                 return s["code"]
-        # 模糊匹配：包含关键词
+
+        # L2: 包含匹配（子串）
         matches = [s for s in stocks if name_lower in s["name"].lower()]
         if len(matches) == 1:
             return matches[0]["code"]
-        # 多个匹配或 0 个：返回空
-        if matches:
+        if len(matches) > 1:
             logger.info("stock_search_ambiguous", name=name, matches=len(matches))
+            return ""   # 多个匹配，不冒险
+
+        # L3: difflib 模糊匹配（相似度 >= 0.6 且唯一匹配）
+        from difflib import SequenceMatcher
+        scored = [
+            (s, SequenceMatcher(None, name_lower, s["name"].lower()).ratio())
+            for s in stocks
+        ]
+        scored = [(s, r) for s, r in scored if r >= 0.6]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        if len(scored) == 1:
+            logger.info("stock_search_fuzzy", name=name,
+                        matched=scored[0][0]["name"], score=round(scored[0][1], 2))
+            return scored[0][0]["code"]
+        if len(scored) > 1:
+            # 第一名与第二名差距 > 0.15 才采纳
+            if scored[0][1] - scored[1][1] > 0.15:
+                logger.info("stock_search_fuzzy", name=name,
+                            matched=scored[0][0]["name"], score=round(scored[0][1], 2))
+                return scored[0][0]["code"]
+            logger.info("stock_search_fuzzy_ambiguous", name=name,
+                        top=[(s["name"], round(r, 2)) for s, r in scored[:3]])
     except Exception as e:
         logger.warning("stock_search_error", name=name, error=str(e))
     return ""
 
-
-# 关键词强制路由：LLM 可能误判，关键词兜底
-_FINANCE_KEYWORDS = ["盈利能力", "财务状况", "偿债能力", "现金流分析", "利润率"]
-_COMPREHENSIVE_KEYWORDS = ["出份报告", "写份报告", "生成报告", "全面分析", "综合分析"]
-
-
-def _keyword_override(llm_intent: str, message: str) -> str:
-    """关键词兜底：避免 LLM 将简单财务分析误判为 comprehensive。"""
-    msg = message.lower()
-    has_finance = any(kw in msg for kw in _FINANCE_KEYWORDS)
-    has_report = any(kw in msg for kw in _COMPREHENSIVE_KEYWORDS)
-
-    if has_finance and not has_report and llm_intent == "comprehensive":
-        logger.info("intent_keyword_override", from_intent="comprehensive", to="financial_analysis")
-        return "financial_analysis"
-    return llm_intent
 
 
 async def classify_intent(message: str, history: list[dict] | None = None) -> IntentResult:
@@ -96,11 +104,30 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
 
         data = json.loads(content)
         intent = data.get("intent", "comprehensive")
-        # ── 关键词兜底（LLM 可能误判 comprehensive） ──
-        intent = _keyword_override(intent, message)
+
+        # ── 窄兜底：LLM 对报告类表达偶尔漏判 ──
+        _REPORT_WORDS = ["报告", "研报", "投研"]
+        _REPORT_PATTERNS = ["出报告", "出个报告", "出份报告", "写报告", "写个报告",
+                           "出一份报告", "生成报告", "生成一份报告",
+                           "给我一份报告", "给我报告", "给份报告", "来份报告",
+                           "一份报告", "一份", "做个报告", "做一份报告"]
+        has_report = any(p in message for p in _REPORT_PATTERNS)
+        # 兜底："一份XX的报告" → "一份" 和 "报告" 都在
+        if not has_report:
+            has_report = ("一份" in message) and any(w in message for w in _REPORT_WORDS)
+        if intent != "comprehensive" and has_report:
+            logger.info("intent_report_override", from_intent=intent, to="comprehensive")
+            intent = "comprehensive"
 
         code = data.get("company_code", "")
         name = data.get("company_name", "")
+
+        # 中概股 US ticker → 优先 HK 代码（AKShare 港股数据更全）
+        _DUAL_LISTED_MAP: dict[str, str] = {
+            "BIDU": "09888", "JD": "09618", "NTES": "09999",
+            "BABA": "09988", "BILI": "09626", "NIO": "09866",
+        }
+        code = _DUAL_LISTED_MAP.get(code.upper(), code) if code else code
 
         # 美股 ticker（1-5 位字母）→ 保留，不做数字校验
         # 非数字非字母代码（异常输入）→ 清空，走搜索兜底
@@ -130,6 +157,4 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
         return intent_result
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         logger.warning("intent_parse_error", error=str(e))
-        # ── 异常兜底：检查关键词决定降级策略 ──
-        fallback = _keyword_override("comprehensive", message)
-        return IntentResult(intent=fallback, company_code="")
+        return IntentResult(intent="comprehensive", company_code="")

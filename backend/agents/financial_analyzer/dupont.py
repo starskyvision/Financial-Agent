@@ -1,4 +1,5 @@
 from state import DupontResult
+from constants.metrics import ROE_DEVIATION_TOLERANCE
 
 
 def compute_dupont(metrics: dict) -> DupontResult:
@@ -56,11 +57,11 @@ def compute_dupont(metrics: dict) -> DupontResult:
     if roe is None:
         roe = computed_roe  # 可能为 None
 
-    # 6. 一致性校验：传入 ROE 与计算 ROE 偏差 > 5% 时标记
+    # 6. 一致性校验：传入 ROE 与计算 ROE 偏差 > ROE_DEVIATION_TOLERANCE 时标记
     formula_mismatch = False
     if roe is not None and computed_roe is not None and roe > 0 and computed_roe > 0:
         deviation = abs(roe - computed_roe) / roe
-        if deviation > 0.05:
+        if deviation > ROE_DEVIATION_TOLERANCE:
             formula_mismatch = True
             missing.append(f"ROE 公式不闭合: 传入 {roe}, 计算 {computed_roe}, 偏差 {deviation:.1%}")
 

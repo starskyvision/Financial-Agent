@@ -77,7 +77,7 @@
         <div class="doc-status" :class="doc.chunks > 0 ? 'ok' : 'fail'">
           {{ doc.chunks > 0 ? '✅ 已解析' : '⚠ 解析失败' }}
         </div>
-        <button class="delete-btn" @click="deleteDoc(doc.id)" title="删除">🗑</button>
+        <button class="delete-btn" @click="deleteDoc(doc)" title="删除">🗑</button>
       </div>
     </div>
     <div v-else class="empty-docs">
@@ -128,7 +128,9 @@ async function fetchDocuments() {
       allDocuments.value = data.documents || []
       totalCount.value = data.total || allDocuments.value.length
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    console.error('fetchDocuments failed:', e)
+  }
 }
 
 // 最多显示 10 条，支持搜索过滤
@@ -146,17 +148,39 @@ const filteredDocs = computed(() => {
 
 function onSearch() { /* computed reacts automatically */ }
 
-async function deleteDoc(id: number) {
+async function deleteDoc(doc: DocItem) {
+  const id = doc.id
+  const title = doc.doc_title
   try {
-    await fetch(`${API_BASE}/rag/documents/${id}`, { method: 'DELETE', headers: authHeaders() })
+    // 主路径：id + title 参数删除
+    let resp = await fetch(
+      `${API_BASE}/rag/documents/${id}?${new URLSearchParams({ title })}`,
+      { method: 'DELETE', headers: authHeaders() },
+    )
+    // 兜底：id 失效（404）→ 直接按标题删除（查询参数，避免路径编码问题）
+    if (resp.status === 404 && title) {
+      resp = await fetch(
+        `${API_BASE}/rag/documents/by-title?${new URLSearchParams({ title })}`,
+        { method: 'DELETE', headers: authHeaders() },
+      )
+    }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error((err as any).detail || `删除失败 (${resp.status})`)
+    }
+    // 乐观移除 + 异步同步
     allDocuments.value = allDocuments.value.filter(d => d.id !== id)
     totalCount.value = Math.max(0, totalCount.value - 1)
-  } catch (e) { alert('删除失败') }
+    fetchDocuments()
+  } catch (e: any) { alert(e.message || '删除失败') }
 }
 
 function formatTime(t: string): string {
   if (!t) return ''
-  return t.replace('T', ' ').substring(0, 19)
+  // 数据库存储 UTC 时间（+00:00），转换为浏览器本地时区显示
+  const d = new Date(t)
+  if (isNaN(d.getTime())) return t.replace('T', ' ').substring(0, 19)
+  return d.toLocaleString('zh-CN', { hour12: false })
 }
 
 function simulateProgress() {

@@ -1,8 +1,8 @@
-import os
 import structlog
 from state import AgentState
 from services.llm_service import get_llm_service
 from prompts.report_generation import REPORT_GENERATION_SYSTEM, build_report_prompt
+from constants.metrics import RAG_TOP_K_DEFAULT, RAG_CONTENT_TRUNCATE
 
 logger = structlog.get_logger()
 
@@ -18,47 +18,43 @@ async def report_generator_node(state: AgentState) -> AgentState:
         return state
 
     try:
+        # Build retry_context BEFORE clearing errors (so rewriter corrections are visible)
+        retry_context = ""
+        existing_errors = state.get("errors", [])
+        if existing_errors and state.get("retry_count", 0) > 0:
+            retry_context = "以下数据在上次报告中与源数据不匹配，请修正：\n" + "\n".join(
+                f"  - {e}" for e in existing_errors
+            )
+
         # Clear previous cycle's fact-check errors
-        state["errors"] = [e for e in state.get("errors", []) if not e.startswith((
+        state["errors"] = [e for e in existing_errors if not e.startswith((
             "ROE:", "ROA:", "净利润:", "营收:", "净利率:", "毛利率:", "现金流:",
             "经营现金流:", "资产负债率:", "每股经营现金流:",
         ))]
-
-        retry_context = ""
-        if state.get("errors") and state.get("retry_count", 0) > 0:
-            retry_context = "以下数据在上次报告中与源数据不匹配，请修正：\n" + "\n".join(
-                f"  - {e}" for e in state["errors"]
-            )
 
         # --- RAG 检索：报告生成前从知识库搜索相关研报 ---
         rag_context = ""
         try:
             from services.rag.search import search_rag
-            from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-            from sqlalchemy.orm import sessionmaker
+            from services.db_utils import get_async_session_factory
 
-            db_url = os.getenv("DATABASE_URL", "")
-            if db_url:
-                sync_url = db_url.replace("postgresql://", "postgresql+asyncpg://")
-                engine = create_async_engine(sync_url, echo=False)
-                async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-                code = state.get("company_code", "")
-                name = state.get("company_name", code)
-                query = f"{name} 财务分析 经营风险 行业展望 投资评级"
-                results = await search_rag(
-                    query=query, company_code=code, top_k=5,
-                    session_factory=async_session,
-                )
-                if results:
-                    rag_parts = []
-                    for r in results:
-                        rag_parts.append(
-                            f"**[{r['doc_title']}]** (相关度: {r['score']:.0%})\n"
-                            f"{r['content'][:300]}"
-                        )
-                    rag_context = "\n\n---\n\n".join(rag_parts)
-                    state["rag_context"] = rag_context
-                await engine.dispose()
+            code = state.get("company_code", "")
+            name = state.get("company_name", code)
+            query = f"{name} 财务分析 经营风险 行业展望 投资评级"
+            async_session = get_async_session_factory()
+            results = await search_rag(
+                query=query, company_code=code, top_k=RAG_TOP_K_DEFAULT,
+                session_factory=async_session,
+            )
+            if results:
+                rag_parts = []
+                for r in results:
+                    rag_parts.append(
+                        f"**[{r['doc_title']}]** (相关度: {r['score']:.0%})\n"
+                        f"{r['content'][:RAG_CONTENT_TRUNCATE]}"
+                    )
+                rag_context = "\n\n---\n\n".join(rag_parts)
+                state["rag_context"] = rag_context
         except Exception as e:
             logger.warning("rag_retrieval_skipped", error=str(e))
 

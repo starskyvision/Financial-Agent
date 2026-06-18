@@ -63,7 +63,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { marked } from 'marked'
-import { postChat } from '@/api/chat'
+import { postChat, subscribeTaskStream } from '@/api/chat'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -164,12 +164,34 @@ async function sendMessage(text: string) {
     (intent) => { aiMsg.intent = intent },
     (text) => { aiMsg.content += text; scrollBottom() },
     (taskId) => {
-      aiMsg.streaming = false
-      loading.value = false
+      // 仅综合报告异步任务走这里：订阅进度流
+      aiMsg.intent = 'comprehensive'
+      aiMsg.taskId = taskId
+      aiMsg.content = '⏳ 任务已提交，正在生成报告...\n\n'
+      subscribeTaskStream(
+        taskId,
+        (msg) => { aiMsg.content += `> ${msg}\n\n`; scrollBottom() },
+        (report) => {
+          aiMsg.streaming = false
+          aiMsg.content = report || '报告生成完成，但内容为空。'
+          loading.value = false
+          scrollBottom()
+        },
+        (err) => {
+          aiMsg.streaming = false
+          aiMsg.content += `\n\n❌ ${err}`
+          loading.value = false
+        },
+      )
     },
     (error) => {
       aiMsg.streaming = false
       aiMsg.content += `\n\n错误: ${error}`
+      loading.value = false
+    },
+    () => {
+      // 快通道 SSE 流正常结束
+      aiMsg.streaming = false
       loading.value = false
     },
   )

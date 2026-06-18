@@ -124,11 +124,9 @@ async def main():
 
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
+    from services.db_utils import ensure_asyncpg_url
 
-    DATABASE_URL = os.getenv(
-        "DATABASE_URL",
-        "postgresql+asyncpg://financial_agent:financial_agent_2024@localhost:15432/financial_agent",
-    )
+    DATABASE_URL = ensure_asyncpg_url()
     sync_url = DATABASE_URL.replace("+asyncpg", "")
     engine = create_async_engine(DATABASE_URL, echo=False)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

@@ -6,7 +6,6 @@ GET    /api/v1/rag/search       语义检索
 GET    /api/v1/rag/documents    列出已入库文档
 DELETE /api/v1/rag/documents/{id} 删除文档
 """
-import os
 import structlog
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
 from pydantic import BaseModel
@@ -52,19 +51,9 @@ class DocListResponse(BaseModel):
 
 # --- 数据库会话工厂 ---
 def _get_session_factory():
-    """创建异步数据库会话工厂。"""
-    import os as _os
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-    from sqlalchemy.orm import sessionmaker
-
-    db_url = _os.getenv(
-        "DATABASE_URL",
-        "postgresql://financial_agent:financial_agent_2024@localhost:15432/financial_agent",
-    )
-    if "asyncpg" not in db_url:
-        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://")
-    engine = create_async_engine(db_url, echo=False)
-    return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    """创建异步数据库会话工厂（共享单例引擎）。"""
+    from services.db_utils import get_async_session_factory
+    return get_async_session_factory()
 
 
 # --- PDF 文本提取 ---
@@ -137,8 +126,10 @@ async def search_documents(
 ):
     """语义检索知识库——基于 BGE-M3 向量相似度。"""
     from services.rag.search import search_rag
+    from services.query_preprocessor import preprocess
     session_factory = _get_session_factory()
 
+    q = preprocess(q, steps=["resolve_dates", "normalize_whitespace"])
     results = await search_rag(q, company_code=company_code, top_k=top_k, session_factory=session_factory)
 
     items = [
@@ -164,8 +155,23 @@ async def list_documents(
     from sqlalchemy import text
     session_factory = _get_session_factory()
 
+    params = {"code": company_code}
+
+    # ── Accurate total count (unlimited) ──
+    count_sql = text("""
+        SELECT COUNT(*) FROM (
+            SELECT 1 FROM documents
+            WHERE (:code = '' OR company_code = :code)
+            GROUP BY doc_title, company_code, doc_type
+        ) AS groups
+    """)
+    async with session_factory() as session:
+        total_row = await session.execute(count_sql, params)
+        total = total_row.scalar() or 0
+
+    # ── Document list (grouped by title+code+type) ──
     sql = text("""
-        SELECT doc_title, company_code, doc_type,
+        SELECT MIN(id) AS id, doc_title, company_code, doc_type,
                count(*) AS chunks, min(created_at) AS created_at
         FROM documents
         WHERE (:code = '' OR company_code = :code)
@@ -175,36 +181,97 @@ async def list_documents(
     """)
 
     async with session_factory() as session:
-        result = await session.execute(sql, {"code": company_code, "limit": limit})
+        result = await session.execute(sql, {**params, "limit": limit})
         rows = result.fetchall()
 
     docs = [
         DocumentItem(
-            id=i,
-            doc_title=row.doc_title or f"doc_{i}",
+            id=row.id,
+            doc_title=row.doc_title or f"doc_{row.id}",
             company_code=row.company_code,
             doc_type=row.doc_type,
             chunks=row.chunks,
             created_at=str(row.created_at),
         )
-        for i, row in enumerate(rows)
+        for row in rows
     ]
-    return DocListResponse(total=len(docs), documents=docs)
+    return DocListResponse(total=total, documents=docs)
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: int):
-    """删除指定 ID 的文档切片。"""
+async def delete_document(
+    doc_id: int,
+    title: str = Query(default="", description="文档标题（兜底：id 失效时按标题删）"),
+):
+    """删除文档：id 定位优先，title 兜底。至少一个参数有效即可。"""
+    from sqlalchemy import text
+    session_factory = _get_session_factory()
+
+    title_val = ""
+    code_val = ""
+    dtype_val = ""
+
+    async with session_factory() as session:
+        # Try id lookup first
+        if doc_id > 0:
+            lookup = await session.execute(
+                text("SELECT doc_title, company_code, doc_type FROM documents WHERE id = :id"),
+                {"id": doc_id},
+            )
+            row = lookup.fetchone()
+            if row is not None:
+                title_val = row.doc_title
+                code_val = row.company_code
+                dtype_val = row.doc_type
+
+        # id 失效 → 改用 title
+        if not title_val and title:
+            title_val = title
+            logger.warning("rag_delete_fallback_by_title", doc_id=doc_id, title=title)
+
+        if not title_val:
+            raise HTTPException(status_code=404, detail="文档不存在，且未提供有效标题")
+
+        # Delete all matching chunks
+        conditions = ["doc_title IS NOT DISTINCT FROM :title"]
+        params: dict = {"title": title_val}
+        if code_val:
+            conditions.append("company_code IS NOT DISTINCT FROM :code")
+            params["code"] = code_val
+        if dtype_val:
+            conditions.append("doc_type IS NOT DISTINCT FROM :dtype")
+            params["dtype"] = dtype_val
+
+        result = await session.execute(
+            text("DELETE FROM documents WHERE " + " AND ".join(conditions)),
+            params,
+        )
+        await session.commit()
+        deleted = result.rowcount
+
+    logger.info("rag_doc_deleted", doc_id=doc_id, title=title_val,
+                code=code_val, chunks=deleted)
+    return {"deleted": True, "doc_id": doc_id, "chunks": deleted}
+
+
+@router.delete("/documents/by-title")
+async def delete_document_by_title(
+    title: str = Query(..., description="文档标题"),
+):
+    """按文档标题直接删除（不依赖切片 id，清理顽固脏数据）。"""
     from sqlalchemy import text
     session_factory = _get_session_factory()
 
     async with session_factory() as session:
         result = await session.execute(
-            text("DELETE FROM documents WHERE id = :id"), {"id": doc_id}
+            text("DELETE FROM documents WHERE doc_title = :title"),
+            {"title": title},
         )
         await session.commit()
-        if result.rowcount == 0:
-            raise HTTPException(status_code=404, detail="文档不存在")
+        deleted = result.rowcount
 
-    logger.info("rag_doc_deleted", doc_id=doc_id)
-    return {"deleted": True, "doc_id": doc_id}
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail=f"未找到标题为「{title}」的文档")
+
+    logger.info("rag_doc_deleted_by_title", title=title, chunks=deleted)
+    return {"deleted": True, "title": title, "chunks": deleted}

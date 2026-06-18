@@ -23,6 +23,7 @@ def fetch_and_index_reports():
     import asyncio
 
     async def run():
+        engine = None
         try:
             import akshare as ak
             df = ak.stock_research_report_em()
@@ -33,11 +34,9 @@ def fetch_and_index_reports():
             from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
             from sqlalchemy.orm import sessionmaker
             from services.rag.ingester import Ingester
+            from services.db_utils import ensure_asyncpg_url
 
-            DATABASE_URL = os.getenv(
-                "DATABASE_URL",
-                "postgresql+asyncpg://financial_agent:financial_agent_2024@localhost:15432/financial_agent",
-            )
+            DATABASE_URL = ensure_asyncpg_url()
             engine = create_async_engine(DATABASE_URL)
             async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -57,9 +56,10 @@ def fetch_and_index_reports():
             if docs:
                 total = await ingester.index_batch(docs)
                 logger.info("reports_indexed", total=total)
-
-            await engine.dispose()
         except Exception as e:
             logger.error("report_fetch_failed", error=str(e))
+        finally:
+            if engine is not None:
+                await engine.dispose()
 
     asyncio.run(run())

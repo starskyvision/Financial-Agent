@@ -1,12 +1,13 @@
 import os
 import structlog
 from state import Anomaly
+from constants.metrics import DEFAULT_METRICS_FETCH
 
 logger = structlog.get_logger()
 
 ANOMALY_WARNING_THRESHOLD = float(os.getenv("ANOMALY_WARNING_THRESHOLD", "0.30"))
 ANOMALY_CRITICAL_THRESHOLD = float(os.getenv("ANOMALY_CRITICAL_THRESHOLD", "0.50"))
-TRACKED_METRICS = ["revenue", "net_profit", "roe", "gross_margin", "net_margin", "operating_cashflow"]
+TRACKED_METRICS = DEFAULT_METRICS_FETCH[:6]  # 复用共享指标列表
 
 # --- Rule-based thresholds for when no historical data is available ---
 # These flag extreme values that warrant analyst attention regardless of trend.

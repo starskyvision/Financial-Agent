@@ -45,6 +45,7 @@ async def _retrieve_context(query: str, top_k: int = 3) -> list[dict]:
             company_code="",
             top_k=top_k,
             session_factory=session_factory,
+            doc_type="report",  # 仅搜真实研报，排除 Kaggle 假公司 ID
         )
         return results or []
     except Exception as exc:
@@ -88,8 +89,11 @@ _REWRITE_SYSTEM_PROMPT = """你是一个金融查询改写助手。用户的问�
 async def _llm_rewrite_query(
     original: str,
     retrieved: list[dict],
-    timeout: float = 3.0,
+    timeout: float | None = None,
 ) -> str:
+    if timeout is None:
+        from constants.metrics import LLM_REWRITE_TIMEOUT
+        timeout = LLM_REWRITE_TIMEOUT
     """用 LLM 改写模糊查询。
 
     Args:
@@ -105,7 +109,7 @@ async def _llm_rewrite_query(
     """
     # 拼接检索片段
     doc_parts: list[str] = []
-    for i, doc in enumerate(retrieved[:3], 1):
+    for i, doc in enumerate(retrieved[:3], 1):  # up to 3 docs in LLM prompt context
         content = doc.get("content", "")[:500]
         title = doc.get("doc_title", "")
         header = f"[文档{i}]" + (f" {title}" if title else "")
@@ -250,6 +254,11 @@ _STOCK_ALIASES: dict[str, str] = {
     "隆基": "隆基绿能",
     "药明": "药明康德",
     "恒瑞": "恒瑞医药",
+    "猪场": "网易",
+    "菊厂": "华为",
+    "蓝厂": "中国平安",
+    "猫厂": "阿里巴巴",
+    "狗厂": "京东",
 }
 
 
@@ -368,10 +377,8 @@ def _append_intent_hint(text: str) -> str:
 _PIPELINE = [
     ("normalize_whitespace", _normalize_whitespace),
     ("resolve_dates", _resolve_relative_dates),
-    ("normalize_names", _normalize_stock_names),
     ("normalize_units", _normalize_units),
     ("normalize_punctuation", _normalize_punctuation),
-    ("append_intent_hint", _append_intent_hint),
 ]
 
 
@@ -438,7 +445,7 @@ async def preprocess_with_rag(
 
     # Step 1: Rule preprocessing (sync)
     cleaned = preprocess(text, steps=[
-        "normalize_whitespace", "resolve_dates", "normalize_names",
+        "normalize_whitespace", "resolve_dates",
     ])
 
     # Step 2: RAG retrieval

@@ -17,7 +17,7 @@ def _get_embedder() -> Embedder:
 
 async def search_rag(
     query: str, company_code: str = "", top_k: int = 5,
-    session_factory=None,
+    session_factory=None, doc_type: str = "",
 ) -> list[dict]:
     """从知识库中语义检索相关文档切片。session_factory=None 时返回空列表。"""
     if session_factory is None:
@@ -29,6 +29,7 @@ async def search_rag(
         retriever = Retriever(session_factory, embedder=embedder)
         results = await retriever.search(
             query, company_code=company_code, top_k=top_k,
+            doc_type=doc_type,
         )
         logger.info("rag_search_done", query=query[:50], results=len(results))
         return results

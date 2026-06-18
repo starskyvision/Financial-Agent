@@ -32,6 +32,31 @@ class TaskRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("app_startup")
+
+    # ── 端口冲突检测（仅开发/生产环境，测试时跳过） ──
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        port = int(os.getenv("PORT", "8000"))
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+            sock.close()
+        except OSError:
+            logger.error("port_conflict", port=port,
+                         hint="Kill existing: taskkill //F //IM python.exe")
+            raise SystemExit(f"Port {port} already in use. Kill the old process first.")
+
+    # ── 预加载：避免首个用户请求等待模型加载 ──
+    try:
+        import asyncio, threading
+        def _warm_embedder():
+            from services.rag.search import _get_embedder
+            _get_embedder()  # loads BGE-M3 model (5-10s on CPU)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _warm_embedder)
+        logger.info("embedder_warmed")
+    except Exception:
+        logger.warning("embedder_warm_failed")
     yield
     # Graceful shutdown: dispose shared DB engine and Redis client
     try:
@@ -157,21 +182,23 @@ async def chat(request: ChatRequest):
             yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
         return StreamingResponse(chitchat_generator(), media_type="text/event-stream")
 
-    # 降级为 comprehensive 但没有有效 company_code 时，返回提示
+    # comprehensive 无 company_code 时，仍提交任务（LLM + 新闻兜底）
     if intent_result.intent == "comprehensive" and not intent_result.company_code:
-        hint_text = 'Please provide stock code or company name, e.g. "600519 financial analysis".'
-        async def hint_generator():
-            chunk = json.dumps({"text": hint_text})
-            yield f"event: chunk\ndata: {chunk}\n\n"
-            done_data = json.dumps({"task_id": task_id})
-            yield f"event: done\ndata: {done_data}\n\n"
-        return StreamingResponse(hint_generator(), media_type="text/event-stream")
+        logger.info("comprehensive_fallback_no_code",
+                    name=intent_result.company_name or "(none)")
 
     # comprehensive → 提交异步任务，返回 task_id 让前端走 /tasks/{id}/stream
     if intent_result.intent == "comprehensive":
-        async_task_id = await TaskManager.submit(
-            intent_result.company_code, intent_result.report_date
-        )
+        try:
+            async_task_id = await TaskManager.submit(
+                intent_result.company_code, intent_result.report_date,
+                intent_result.company_name,
+            )
+        except RuntimeError as e:
+            return StreamingResponse(
+                iter([f"data: {json.dumps({'text': str(e)})}\n\n"]),
+                media_type="text/event-stream",
+            )
         return {"task_id": async_task_id, "status": "accepted"}
 
     state = make_initial_state(task_id)
@@ -203,7 +230,10 @@ async def chat(request: ChatRequest):
 async def submit_task(request: TaskRequest):
     if not request.company_code:
         raise HTTPException(status_code=400, detail="company_code is required")
-    task_id = await TaskManager.submit(request.company_code, request.report_date)
+    try:
+        task_id = await TaskManager.submit(request.company_code, request.report_date)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"task_id": task_id, "status": "pending"}
 
 
@@ -298,6 +328,15 @@ async def health():
     except Exception:
         health_status["postgres"] = "disconnected"
         health_status["pgvector"] = "disconnected"
+
+    # Celery worker status
+    try:
+        from services.task_queue.celery_app import celery_app
+        inspect = celery_app.control.inspect(timeout=1.0)
+        stats = inspect.stats()
+        health_status["celery_workers"] = len(stats) if stats else 0
+    except Exception:
+        health_status["celery_workers"] = 0
 
     return health_status
 

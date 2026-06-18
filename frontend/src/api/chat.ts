@@ -23,6 +23,7 @@ export async function postChat(
   onChunk: (text: string) => void,
   onDone: (taskId: string) => void,
   onError: (error: string) => void,
+  onStreamEnd: () => void = () => {},
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
@@ -69,11 +70,72 @@ export async function postChat(
             const json = JSON.parse(line.slice(6))
             if (json.intent) onIntent(json.intent)
             if (json.text) onChunk(json.text)
-            if (json.task_id && json.intent === undefined) onDone(json.task_id)
+            // Only call onDone for comprehensive-task response, not SSE "done" event
             if (json.message) onError(json.message)
           } catch {
             // 非 JSON data 跳过
           }
+        }
+      }
+    }
+    // SSE stream ended normally — fast-path complete (not a comprehensive task)
+    onStreamEnd()
+  } catch (e: any) {
+    onError(e.message || '连接中断')
+  }
+}
+
+/** 订阅异步任务进度 SSE 流，完成后返回报告内容 */
+export async function subscribeTaskStream(
+  taskId: string,
+  onProgress: (msg: string) => void,
+  onDone: (report: string) => void,
+  onError: (err: string) => void,
+): Promise<void> {
+  const headers: Record<string, string> = {}
+  if (API_KEY) headers['X-API-Key'] = API_KEY
+
+  const response = await fetch(`${API_BASE}/tasks/${taskId}/stream`, { headers })
+  const reader = response.body?.getReader()
+  if (!reader) { onError('无法连接任务流'); return }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            const doneFlag = data.type === 'done' || data.status === 'done'
+            const failFlag = data.type === 'failed' || data.status === 'failed'
+            const msg = data.message || data.stage || ''
+
+            if (doneFlag) {
+              // 任务完成：拉取报告内容
+              const reportResp = await fetch(`${API_BASE}/reports/${taskId}`, { headers })
+              if (reportResp.ok) {
+                const reportData = await reportResp.json()
+                onDone(reportData.report || '')
+              } else {
+                onDone('')
+              }
+              return
+            } else if (failFlag) {
+              onError(data.message || '任务执行失败')
+              return
+            } else if (msg) {
+              onProgress(msg)
+            }
+          } catch { /* skip non-JSON */ }
         }
       }
     }

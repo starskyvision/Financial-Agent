@@ -54,7 +54,7 @@ class SentimentResult(BaseModel):
     positive_count: int = 0
     neutral_count: int = 0
     negative_count: int = 0
-    key_topics: list[str] = []
+    key_topics: list = []  # list[str] (旧) 或 list[dict] (新: {"topic":"","description":""})
     summary: str = ""
     details: list[SentimentDetail] = []
 

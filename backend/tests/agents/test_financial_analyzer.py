@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from state import make_initial_state
-from agents.financial_analyzer.dupont import compute_dupont, DupontResult
+from agents.financial_analyzer.dupont import compute_dupont
 from agents.financial_analyzer.anomaly import detect_anomalies
 from agents.financial_analyzer.node import financial_analyzer_node
 
