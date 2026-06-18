@@ -17,10 +17,10 @@
 - **Agent 框架**: LangGraph 1.2+ / LangChain 1.3+（StateGraph 状态机 + 条件边路由）
 - **大模型**: DeepSeek-V3（主力，云端 API）/ Qwen（备选降级），后续按需下沉本地
 - **数据源**: AKShare（MVP 默认），Adapter 抽象层预留 Wind / Tushare 接口
-- **向量库**: Milvus 2.4 / pymilvus 2.4.x
+- **向量库**: PostgreSQL 16 + pgvector（通过 SQLAlchemy asyncpg 方言操作）
 - **队列/缓存**: Celery 5.6 + Redis 5.0~5.2.1（**禁止升 Redis 8.x，Celery 不兼容**）
-- **数据库**: MySQL 8.0
-- **容器化**: Docker Compose
+- **数据库**: PostgreSQL 16（含 pgvector 扩展，JSONB 支持）
+- **容器化**: Docker Compose（postgres:16 镜像 + pgvector 扩展）
 
 ## 项目结构
 
@@ -35,7 +35,7 @@
 │   ├── services/              # 公共服务
 │   │   ├── data_sources/      # 数据源 Adapter 抽象层
 │   │   ├── task_queue/        # Celery + Redis 异步任务队列
-│   │   └── retrieval/         # Milvus 向量检索
+│   │   └── rag/               # PostgreSQL pgvector 向量检索 + RAG
 │   ├── prompts/               # LLM 提示词模板
 │   ├── db/                    # 数据库初始化 SQL
 │   ├── main.py                # FastAPI 入口（/chat + /tasks 双路由）

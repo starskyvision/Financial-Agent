@@ -1,19 +1,24 @@
 import json
 import structlog
 from state import AgentState
-from constants.metrics import METRIC_LABELS, PERCENT_FORMAT_METRICS
+from constants.metrics import METRIC_LABELS, PERCENT_FORMAT_METRICS, OUTPUT_NEWS_DETAIL_LIMIT
 
 logger = structlog.get_logger()
 
 SENTIMENT_LABELS = {"positive": "积极", "neutral": "中性", "negative": "消极"}
 
 
-def _format_metrics(metrics: dict, company: str) -> str:
+def _format_metrics(metrics: dict, company: str, source: str = "AKShare", user_date: str = "") -> str:
     """格式化财务指标为 Markdown"""
-    parts = [f"## {company} 关键财务指标\n"]
+    report_date = metrics.get("_report_date", "")
+    if user_date and report_date and user_date != report_date:
+        date_str = f"（实际数据: {report_date} | 用户请求: {user_date}）"
+    else:
+        date_str = f"（报告期: {report_date}）" if report_date else ""
+    parts = [f"## {company} 关键财务指标{date_str}\n"]
     displayed = 0
     for k, v in metrics.items():
-        if v is not None:
+        if v is not None and not k.startswith("_"):
             label = METRIC_LABELS.get(k, k)
             if k in PERCENT_FORMAT_METRICS:
                 parts.append(f"- {label}: **{v*100:.1f}%**")
@@ -22,6 +27,8 @@ def _format_metrics(metrics: dict, company: str) -> str:
             displayed += 1
     if displayed == 0:
         parts.append("暂无可用数据")
+    else:
+        parts.append(f"\n> 数据来源: {source}")
     parts.append("")
     return "\n".join(parts)
 
@@ -37,18 +44,44 @@ def _format_sentiment(sent: dict) -> str:
 
     label = SENTIMENT_LABELS.get(overall, overall)
     parts.append(f"**整体倾向: {label}** (评分: {score:.1f})\n")
-    if topics:
-        parts.append(f"**关键主题**: {', '.join(topics)}\n")
     if summary:
         parts.append(f"\n{summary}\n")
-    if details:
-        parts.append("\n**代表性新闻**:\n")
-        for d in details[:5]:
+    if topics:
+        parts.append("\n**关键主题**:\n")
+        for t in topics:
+            if isinstance(t, dict):
+                name = t.get("topic", "")
+                desc = t.get("description", "")
+                parts.append(f"- **{name}**")
+                if desc:
+                    parts.append(f"  > {desc}")
+            else:
+                parts.append(f"- {t}")
+        parts.append("")
+    has_real_news = any(d.get("published_at") or d.get("url") for d in details)
+    if details and has_real_news:
+        shown = 0
+        for d in details:
+            if shown >= OUTPUT_NEWS_DETAIL_LIMIT:
+                break
+            title = d.get('title', '').strip()
+            if not title:
+                continue  # skip empty titles (LLM hallucination in knowledge mode)
+            shown += 1
             s_label = SENTIMENT_LABELS.get(d.get("sentiment", ""), d.get("sentiment", ""))
-            parts.append(f"- [{s_label}] {d.get('title', '')}")
+            pub_time = d.get("published_at", "")
+            url = d.get("url", "")
+            time_str = f" — {pub_time}" if pub_time else ""
+            if shown == 1:
+                parts.append("\n**代表性新闻**:\n")
+            parts.append(f"- [{s_label}] **{title}**{time_str}")
             if d.get("reasoning"):
                 parts.append(f"  > {d['reasoning']}")
+            if url:
+                parts.append(f"  > 🔗 {url}")
             parts.append("")
+        if shown > 0:
+            parts.append("> 数据来源: 东方财富新闻\n")
 
     return "\n".join(parts)
 
@@ -56,19 +89,24 @@ def _format_sentiment(sent: dict) -> str:
 def _format_simple(raw: dict, company: str) -> str:
     """格式化简单查询的回答"""
     metrics = raw.get("financial_metrics", {})
+    sources = raw.get("data_sources", ["AKShare"])
+    source_label = "、".join(sources)
+    report_date = metrics.get("_report_date", "")
+    date_str = f"（报告期: {report_date}）" if report_date else ""
     if not metrics:
         return "暂无相关数据。"
-    lines = []
+    lines = [f"## {company} {date_str}\n"]
     for k, v in metrics.items():
-        if v is not None:
+        if v is not None and not k.startswith("_"):
             label = METRIC_LABELS.get(k, k)
             if k in PERCENT_FORMAT_METRICS:
                 lines.append(f"- {label}: **{v*100:.1f}%**")
             else:
                 lines.append(f"- {label}: **{v:.2f}**")
-    if not lines:
+    if len(lines) <= 1:
         return f"{company} 暂无可用数据。"
-    return f"## {company}\n" + "\n".join(lines)
+    lines.append(f"\n> 数据来源: {source_label}")
+    return "\n".join(lines)
 
 
 def _format_market_data(market: dict) -> str:
@@ -160,10 +198,9 @@ async def output_node(state: AgentState) -> AgentState:
             state["chat_reply"] = _format_simple(raw, company)
 
     elif intent == "sentiment_analysis":
-        # 只显示舆情，不显示财务指标
         parts = [f"## {company} 舆情分析\n"]
         sent = state.get("sentiment_result")
-        if sent and sent.get("summary"):
+        if sent and (sent.get("summary") or sent.get("key_topics") or sent.get("details")):
             parts.append(_format_sentiment(sent))
         else:
             parts.append("暂无可用舆情数据。")
@@ -174,7 +211,10 @@ async def output_node(state: AgentState) -> AgentState:
         raw = state.get("raw_data") or {}
         metrics = raw.get("financial_metrics", {})
         if metrics:
-            state["chat_reply"] = _format_metrics(metrics, company)
+            state["chat_reply"] = _format_metrics(
+                metrics, company,
+                user_date=state.get("report_date", ""),
+            )
         fin = state.get("financial_analysis")
         if fin and fin.get("narrative"):
             state["chat_reply"] = (state.get("chat_reply", "") or "") + "\n" + fin["narrative"]

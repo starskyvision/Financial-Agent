@@ -3,7 +3,7 @@ AgentState + 核心类型定义 —— 单元测试
 """
 
 import pytest
-from state import (AgentState, IntentResult, DupontResult, Anomaly,
+from state import (IntentResult, DupontResult, Anomaly,
                    SentimentDetail, SentimentResult, make_initial_state)
 
 

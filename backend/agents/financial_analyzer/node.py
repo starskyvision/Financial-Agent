@@ -2,6 +2,7 @@ import structlog
 from state import AgentState
 from agents.financial_analyzer.dupont import compute_dupont
 from agents.financial_analyzer.anomaly import detect_anomalies
+from constants.metrics import ANOMALY_MEDIUM_CONFIDENCE_THRESHOLD
 from services.llm_service import get_llm_service
 from prompts.financial_analysis import FINANCIAL_ANALYSIS_SYSTEM, build_financial_analysis_prompt
 
@@ -32,11 +33,22 @@ async def financial_analyzer_node(state: AgentState) -> AgentState:
         anomaly_dicts = [a.model_dump() for a in anomalies]
 
         llm = get_llm_service()
+        # 使用实际数据报告期（来自数据源），而非用户请求的日期
+        actual_date = metrics.get("_report_date", "") or state.get("report_date", "")
+        user_date = state.get("report_date", "")
+        company = state.get("company_name", state.get("company_code", ""))
         prompt = build_financial_analysis_prompt(
-            dupont_dict, anomaly_dicts,
-            state.get("company_name", state.get("company_code", "")),
-            state.get("report_date", ""),
+            dupont_dict, anomaly_dicts, company, actual_date,
         )
+        # 若用户指定了时间段但数据不匹配，前置强硬提示
+        if user_date and actual_date and user_date != actual_date:
+            prompt = (
+                f"重要约束: 用户请求 {user_date}, "
+                f"但数据源仅有 {actual_date} 的数据. "
+                f"你必须基于 {actual_date} 进行分析, "
+                f"严禁在分析中使用 {user_date} 或 Q1/Q2/Q3 等季度描述. "
+                f"开头请说明: 本分析基于 {actual_date} 数据.\n\n"
+            ) + prompt
         result = await llm.invoke("financial_analyzer", [
             {"role": "system", "content": FINANCIAL_ANALYSIS_SYSTEM},
             {"role": "user", "content": prompt},
@@ -46,7 +58,7 @@ async def financial_analyzer_node(state: AgentState) -> AgentState:
         confidence = "high"
         if not dupont.is_valid:
             confidence = "low"
-        elif len(anomalies) > 3:
+        elif len(anomalies) > ANOMALY_MEDIUM_CONFIDENCE_THRESHOLD:
             confidence = "medium"
 
         state["financial_analysis"] = {

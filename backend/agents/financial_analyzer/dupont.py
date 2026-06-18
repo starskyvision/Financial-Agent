@@ -1,4 +1,5 @@
 from state import DupontResult
+from constants.metrics import ROE_DEVIATION_TOLERANCE
 
 
 def compute_dupont(metrics: dict) -> DupontResult:
@@ -47,11 +48,28 @@ def compute_dupont(metrics: dict) -> DupontResult:
     if not has_basic:
         missing.extend(["net_profit", "revenue"])
 
+    # 5. ROE: 优先使用传入值，其次从三分量计算
+    # 关键：当 asset_turnover 为 0（total_assets 缺失）时，不能用三分量推导 ROE
+    computed_roe = None
+    if net_margin is not None and asset_turnover is not None and asset_turnover > 0 and equity_multiplier and equity_multiplier > 0:
+        computed_roe = round(net_margin * asset_turnover * equity_multiplier, 4)
+
+    if roe is None:
+        roe = computed_roe  # 可能为 None
+
+    # 6. 一致性校验：传入 ROE 与计算 ROE 偏差 > ROE_DEVIATION_TOLERANCE 时标记
+    formula_mismatch = False
+    if roe is not None and computed_roe is not None and roe > 0 and computed_roe > 0:
+        deviation = abs(roe - computed_roe) / roe
+        if deviation > ROE_DEVIATION_TOLERANCE:
+            formula_mismatch = True
+            missing.append(f"ROE 公式不闭合: 传入 {roe}, 计算 {computed_roe}, 偏差 {deviation:.1%}")
+
     return DupontResult(
         roe=roe if roe else 0,
         net_margin=net_margin if net_margin else 0,
         asset_turnover=asset_turnover if asset_turnover else 0,
         equity_multiplier=equity_multiplier,
-        is_valid=has_basic and len(missing) == 0,
+        is_valid=has_basic and len(missing) == 0 and not formula_mismatch,
         missing_metrics=missing,
     )

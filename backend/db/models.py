@@ -1,17 +1,11 @@
-from sqlalchemy import Column, BigInteger, String, Date, DateTime, Integer, Text, JSON, func
+from sqlalchemy import Column, BigInteger, String, Date, DateTime, Integer, Text, Numeric, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
-import enum
+from pgvector.sqlalchemy import Vector
 
 
 class Base(DeclarativeBase):
     pass
-
-
-class TaskStatus(str, enum.Enum):
-    pending = "pending"
-    running = "running"
-    done = "done"
-    failed = "failed"
 
 
 class FinancialData(Base):
@@ -21,9 +15,9 @@ class FinancialData(Base):
     company_code = Column(String(10), nullable=False, index=True)
     report_date = Column(Date, nullable=False)
     metric_name = Column(String(64), nullable=False)
-    metric_value = Column(String(64), nullable=False)
+    metric_value = Column(Numeric(20, 4))
     source = Column(String(32), default="akshare")
-    created_at = Column(DateTime, server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Document(Base):
@@ -32,10 +26,12 @@ class Document(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     company_code = Column(String(10), nullable=False, index=True)
     doc_type = Column(String(32), nullable=False)
+    doc_title = Column(String(256))
     chunk_index = Column(Integer, default=0)
-    content = Column(Text)
-    vector_id = Column(String(64), nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
+    content = Column(Text, nullable=False)
+    content_zh = Column(Text)
+    embedding = Column(Vector(1024))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Task(Base):
@@ -43,8 +39,11 @@ class Task(Base):
 
     id = Column(String(36), primary_key=True)
     company_code = Column(String(10), nullable=False)
+    company_name = Column(String(64))
+    report_date = Column(Date)
     status = Column(String(16), default="pending")
-    result = Column(JSON, nullable=True)
-    error_log = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    progress = Column(Integer, default=0)
+    result = Column(JSONB)
+    error_log = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -1,8 +1,9 @@
+import os
 import structlog
 from state import AgentState
 
 logger = structlog.get_logger()
-MAX_REWRITE_RETRIES = 3
+MAX_REWRITE_RETRIES = int(os.getenv("MAX_RETRY_ROUNDS", "3"))
 
 
 def route_after_review(state: AgentState) -> str:

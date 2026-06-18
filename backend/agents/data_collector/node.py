@@ -3,26 +3,47 @@ import structlog
 from datetime import datetime
 from services.data_sources import create_data_source
 from services.data_sources.base import DataSourceConfig
+from services.env import env_str, env_int
+from constants.metrics import DEFAULT_METRICS_FETCH, SIMPLE_QUERY_METRICS
 from state import AgentState
 
 logger = structlog.get_logger()
+
+# --- Configurable settings (env vars with defaults) ---
+DATA_SOURCE_TYPE = env_str("DATA_SOURCE", "akshare")
+FETCH_TIMEOUT = env_int("FETCH_TIMEOUT", "30")
+NEWS_LOOKBACK_DAYS = env_int("NEWS_LOOKBACK_DAYS", "30")
+DOC_FETCH_LIMIT = env_int("DOC_FETCH_LIMIT", "5")
 
 
 async def data_collector_node(state: AgentState) -> AgentState:
     logger.info("data_collector_node_start", task_id=state.get("task_id"),
                 code=state.get("company_code"))
 
+    try:
+        return await _data_collector_impl(state)
+    except Exception as e:
+        logger.error("data_collector_node_fatal", error=str(e))
+        state["errors"].append(f"数据收集节点异常: {str(e)}")
+        state["raw_data"] = None
+        return state
+
+
+async def _data_collector_impl(state: AgentState) -> AgentState:
+
     intent = state.get("intent", "comprehensive")
     code = state.get("company_code", "")
     date = state.get("report_date", "")
     query_type = state.get("query_type", "")
 
-    config = DataSourceConfig(source_type="akshare", timeout=30)
+    config = DataSourceConfig(source_type=DATA_SOURCE_TYPE, timeout=FETCH_TIMEOUT)
     adapter = create_data_source(config)
 
-    # --- 自动检测美股 ticker ---
-    if not query_type and code and code.isalpha() and code.isupper():
-        query_type = "stock_price"
+    # --- 自动检测美股 ticker（使用 AKShareAdapter 的验证方法） ---
+    if not query_type and code:
+        from services.data_sources.akshare_adapter import AKShareAdapter
+        if AKShareAdapter._is_us_stock(code):
+            query_type = "stock_price"
 
     # --- 市场行情查询（金价/油价/股价/指数） ---
     MARKET_QUERY_TYPES = ("gold_price", "commodity_price", "exchange_rate", "stock_price", "index_price")
@@ -35,7 +56,7 @@ async def data_collector_node(state: AgentState) -> AgentState:
                 "news_headlines": [],
                 "doc_snippets": [],
                 "market_data": market_data,
-                "data_sources": ["akshare"],
+                "data_sources": [DATA_SOURCE_TYPE],
                 "fetched_at": datetime.now().isoformat(),
             }
             logger.info("data_collector_market_done", query_type=query_type)
@@ -51,19 +72,15 @@ async def data_collector_node(state: AgentState) -> AgentState:
         return state
 
     if intent == "simple_query":
-        metrics = ["revenue", "net_profit"]
+        metrics = SIMPLE_QUERY_METRICS
     else:
-        metrics = [
-            "revenue", "net_profit", "roe", "gross_margin",
-            "net_margin", "operating_cashflow_per_share",
-            "debt_ratio", "equity_ratio"
-        ]
+        metrics = DEFAULT_METRICS_FETCH
 
     financials_task = adapter.fetch_financials(code, date, metrics)
-    news_task = adapter.fetch_news(code, days=30)
+    news_task = adapter.fetch_news(code, days=NEWS_LOOKBACK_DAYS)
 
     if intent == "comprehensive":
-        docs_task = adapter.fetch_documents(code, "announcement", limit=5)
+        docs_task = adapter.fetch_documents(code, "announcement", limit=DOC_FETCH_LIMIT)
         results = await asyncio.gather(financials_task, news_task, docs_task, return_exceptions=True)
     else:
         results = await asyncio.gather(financials_task, news_task, return_exceptions=True)
@@ -89,7 +106,7 @@ async def data_collector_node(state: AgentState) -> AgentState:
         "financial_metrics": financials if isinstance(financials, dict) else {},
         "news_headlines": news if isinstance(news, list) else [],
         "doc_snippets": docs if isinstance(docs, list) else [],
-        "data_sources": ["akshare"],
+        "data_sources": [DATA_SOURCE_TYPE],
         "fetched_at": datetime.now().isoformat(),
     }
     state["errors"].extend(errors)

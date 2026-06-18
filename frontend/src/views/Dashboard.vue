@@ -11,14 +11,14 @@
           <span class="value">{{ health.redis }}</span>
         </div>
         <div class="status-item">
-          <span class="dot" :class="health.milvus === 'connected' ? 'green' : 'red'"></span>
-          <span class="label">Milvus</span>
-          <span class="value">{{ health.milvus || 'not_configured' }}</span>
+          <span class="dot" :class="health.postgres === 'connected' ? 'green' : 'red'"></span>
+          <span class="label">PostgreSQL</span>
+          <span class="value">{{ health.postgres || 'unknown' }}</span>
         </div>
         <div class="status-item">
-          <span class="dot" :class="health.mysql === 'connected' ? 'green' : 'red'"></span>
-          <span class="label">MySQL</span>
-          <span class="value">{{ health.mysql || 'unknown' }}</span>
+          <span class="dot" :class="health.pgvector === 'connected' ? 'green' : 'red'"></span>
+          <span class="label">pgvector</span>
+          <span class="value">{{ health.pgvector || 'unknown' }}</span>
         </div>
         <div class="status-item">
           <span class="dot green"></span>
@@ -89,7 +89,7 @@ const agents = [
 
 const techStack = [
   'FastAPI', 'LangGraph 1.2+', 'LangChain 1.3+', 'DeepSeek-V3',
-  'Celery 5.6', 'Redis', 'MySQL 8.0', 'Milvus 2.4',
+  'Celery 5.6', 'Redis', 'PostgreSQL 16', 'pgvector',
   'Vue3', 'Vite', 'TypeScript', 'AKShare',
 ]
 

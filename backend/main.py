@@ -3,7 +3,7 @@ import json
 import uuid
 import structlog
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -32,15 +32,59 @@ class TaskRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("app_startup")
+
+    # ── 端口冲突检测（仅开发/生产环境，测试时跳过） ──
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        port = int(os.getenv("PORT", "8000"))
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+            sock.close()
+        except OSError:
+            logger.error("port_conflict", port=port,
+                         hint="Kill existing: taskkill //F //IM python.exe")
+            raise SystemExit(f"Port {port} already in use. Kill the old process first.")
+
+    # ── 预加载：避免首个用户请求等待模型加载 ──
+    try:
+        import asyncio, threading
+        def _warm_embedder():
+            from services.rag.search import _get_embedder
+            _get_embedder()  # loads BGE-M3 model (5-10s on CPU)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _warm_embedder)
+        logger.info("embedder_warmed")
+    except Exception:
+        logger.warning("embedder_warm_failed")
     yield
+    # Graceful shutdown: dispose shared DB engine and Redis client
+    try:
+        from services.db_utils import dispose_engine
+        await dispose_engine()
+    except Exception:
+        pass
+    try:
+        from services.task_queue.manager import _redis_client
+        if _redis_client is not None:
+            await _redis_client.close()
+    except Exception:
+        pass
     logger.info("app_shutdown")
 
 
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import HTMLResponse
+from api.rag import router as rag_router
 
 app = FastAPI(title="金融多智能体协作系统", version="0.1.0", lifespan=lifespan)
+app.include_router(rag_router)
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
+
+from middleware.auth import auth_middleware
+from middleware.rate_limit import rate_limit_middleware
+app.middleware("http")(auth_middleware)
+app.middleware("http")(rate_limit_middleware)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -80,13 +124,21 @@ async def chat(request: ChatRequest):
     logger.info("chat_request", task_id=task_id, message=request.message[:50])
 
     from agents.intent_classifier.classifier import classify_intent
+    from services.query_preprocessor import QueryRewriteError
     try:
         intent_result = await classify_intent(request.message)
+    except QueryRewriteError as e:
+        # User-friendly message from RAG query rewriting (e.g. "问题不够明确，请补充股票代码或公司名称")
+        err_text = str(e)
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'text': err_text})}\n\n"]),
+            media_type="text/event-stream"
+        )
     except Exception as e:
         logger.error("intent_classification_failed", error=str(e))
         err_text = f"Intent classification failed: {str(e)}"
         return StreamingResponse(
-            iter([f"data: {json.dumps({'error': err_text})}\n\n"]),
+            iter([f"data: {json.dumps({'text': err_text})}\n\n"]),
             media_type="text/event-stream"
         )
 
@@ -130,15 +182,24 @@ async def chat(request: ChatRequest):
             yield f"event: done\ndata: {json.dumps({'task_id': task_id})}\n\n"
         return StreamingResponse(chitchat_generator(), media_type="text/event-stream")
 
-    # 降级为 comprehensive 但没有有效 company_code 时，返回提示
+    # comprehensive 无 company_code 时，仍提交任务（LLM + 新闻兜底）
     if intent_result.intent == "comprehensive" and not intent_result.company_code:
-        hint_text = 'Please provide stock code or company name, e.g. "600519 financial analysis".'
-        async def hint_generator():
-            chunk = json.dumps({"text": hint_text})
-            yield f"event: chunk\ndata: {chunk}\n\n"
-            done_data = json.dumps({"task_id": task_id})
-            yield f"event: done\ndata: {done_data}\n\n"
-        return StreamingResponse(hint_generator(), media_type="text/event-stream")
+        logger.info("comprehensive_fallback_no_code",
+                    name=intent_result.company_name or "(none)")
+
+    # comprehensive → 提交异步任务，返回 task_id 让前端走 /tasks/{id}/stream
+    if intent_result.intent == "comprehensive":
+        try:
+            async_task_id = await TaskManager.submit(
+                intent_result.company_code, intent_result.report_date,
+                intent_result.company_name,
+            )
+        except RuntimeError as e:
+            return StreamingResponse(
+                iter([f"data: {json.dumps({'text': str(e)})}\n\n"]),
+                media_type="text/event-stream",
+            )
+        return {"task_id": async_task_id, "status": "accepted"}
 
     state = make_initial_state(task_id)
     state["intent"] = intent_result.intent
@@ -169,7 +230,10 @@ async def chat(request: ChatRequest):
 async def submit_task(request: TaskRequest):
     if not request.company_code:
         raise HTTPException(status_code=400, detail="company_code is required")
-    task_id = await TaskManager.submit(request.company_code, request.report_date)
+    try:
+        task_id = await TaskManager.submit(request.company_code, request.report_date)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     return {"task_id": task_id, "status": "pending"}
 
 
@@ -182,24 +246,37 @@ async def get_task_status(task_id: str):
 async def stream_task_progress(task_id: str):
     async def event_generator():
         r = await get_redis()
-        pubsub = r.pubsub()
-        await pubsub.subscribe(f"task:{task_id}:events")
         try:
+            # 1. Emit current status first
             status = await TaskManager.get_status(task_id)
-            yield f"event: status\ndata: {json.dumps(status)}\n\n"
+            yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
+
+            # 2. Replay any historical progress events (for late subscribers)
+            history = await r.lrange(f"task:{task_id}:progress_log", 0, -1)
+            for entry in history:
+                yield f"data: {entry}\n\n"
+
+            # 3. If already done, exit
             if status.get("status") in ("done", "failed"):
                 return
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    yield f"data: {message['data']}\n\n"
-                    try:
-                        event_data = json.loads(message['data'])
-                        if event_data.get("type") in ("done", "failed"):
-                            break
-                    except json.JSONDecodeError:
-                        pass
+
+            # 4. Subscribe to live progress events
+            pubsub = r.pubsub()
+            await pubsub.subscribe(f"task:{task_id}:events")
+            try:
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        yield f"data: {message['data']}\n\n"
+                        try:
+                            event_data = json.loads(message['data'])
+                            if event_data.get("type") in ("done", "failed"):
+                                break
+                        except json.JSONDecodeError:
+                            pass
+            finally:
+                await pubsub.unsubscribe(f"task:{task_id}:events")
         finally:
-            await pubsub.unsubscribe(f"task:{task_id}:events")
+            pass  # get_redis() returns shared client, don't close
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -217,8 +294,9 @@ async def health():
     health_status = {
         "status": "healthy",
         "redis": "unknown",
-        "mysql": "unknown",
-        "milvus": "unknown",
+        "postgres": "unknown",
+        "pgvector": "unknown",
+        "version": os.getenv("APP_VERSION", "1.0.0"),
     }
     # Redis
     try:
@@ -227,32 +305,38 @@ async def health():
         health_status["redis"] = "connected"
     except Exception:
         health_status["redis"] = "disconnected"
-    # MySQL
+    # PostgreSQL + pgvector (synchronous check — lightweight, runs rarely)
     try:
-        import os, pymysql
-        conn = pymysql.connect(
-            host=os.getenv("MYSQL_HOST", "localhost"),
-            port=int(os.getenv("MYSQL_PORT", "3307")),
-            user=os.getenv("MYSQL_USER", "root"),
-            password=os.getenv("MYSQL_PASSWORD", ""),
-            database=os.getenv("MYSQL_DATABASE", "financial_agent"),
-            connect_timeout=3,
-        )
-        conn.ping()
-        conn.close()
-        health_status["mysql"] = "connected"
+        import psycopg2
+        db_url = os.getenv("DATABASE_URL", "")
+        if not db_url:
+            health_status["postgres"] = "not_configured"
+        else:
+            conn = cur = None
+            try:
+                conn = psycopg2.connect(db_url, connect_timeout=3)
+                cur = conn.cursor()
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                has_vector = cur.fetchone() is not None
+                health_status["postgres"] = "connected"
+                health_status["pgvector"] = "connected" if has_vector else "not_installed"
+            finally:
+                if cur is not None:
+                    cur.close()
+                if conn is not None:
+                    conn.close()
     except Exception:
-        health_status["mysql"] = "disconnected"
-    # Milvus
+        health_status["postgres"] = "disconnected"
+        health_status["pgvector"] = "disconnected"
+
+    # Celery worker status
     try:
-        from pymilvus import connections
-        m_host = os.getenv("MILVUS_HOST", "localhost")
-        m_port = os.getenv("MILVUS_PORT", "19530")
-        connections.connect(host=m_host, port=m_port, timeout=3)
-        connections.disconnect("default")
-        health_status["milvus"] = "connected"
+        from services.task_queue.celery_app import celery_app
+        inspect = celery_app.control.inspect(timeout=1.0)
+        stats = inspect.stats()
+        health_status["celery_workers"] = len(stats) if stats else 0
     except Exception:
-        health_status["milvus"] = "disconnected"
+        health_status["celery_workers"] = 0
 
     return health_status
 

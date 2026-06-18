@@ -1,12 +1,28 @@
 import pytest
 import json
 from unittest.mock import AsyncMock, patch
-from state import IntentResult, make_initial_state
+from state import make_initial_state
 from agents.intent_classifier.classifier import classify_intent
 from agents.intent_classifier.node import intent_classifier_node
 
 
 class TestClassifyIntent:
+    """Tests for classify_intent with RAG-enhanced preprocessing.
+
+    The mock_preprocess helper patches preprocess_with_rag to return the
+    original message unchanged, avoiding real LLM/DB calls in the RAG
+    pipeline while still testing the classifier logic end-to-end.
+    """
+
+    @staticmethod
+    def _mock_preprocess():
+        """Return an AsyncMock that passes through the original message."""
+        mock = AsyncMock()
+        mock.side_effect = lambda msg: msg
+        return patch(
+            "services.query_preprocessor.preprocess_with_rag", mock
+        )
+
     @pytest.mark.asyncio
     async def test_financial_analysis_intent(self):
         mock_llm = AsyncMock()
@@ -17,7 +33,8 @@ class TestClassifyIntent:
             "model": "deepseek-chat",
             "usage": {"prompt_tokens": 100, "completion_tokens": 30},
         }
-        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm):
+        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm), \
+             self._mock_preprocess():
             result = await classify_intent("分析茅台2024Q3的盈利能力")
             assert result.intent == "financial_analysis"
             assert result.company_code == "600519"
@@ -33,7 +50,8 @@ class TestClassifyIntent:
             "model": "deepseek-chat",
             "usage": {"prompt_tokens": 80, "completion_tokens": 20},
         }
-        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm):
+        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm), \
+             self._mock_preprocess():
             result = await classify_intent("茅台PE多少")
             assert result.intent == "simple_query"
 
@@ -45,7 +63,8 @@ class TestClassifyIntent:
             "model": "deepseek-chat",
             "usage": {"prompt_tokens": 50, "completion_tokens": 10},
         }
-        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm):
+        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm), \
+             self._mock_preprocess():
             result = await classify_intent("测试消息")
             assert result.intent == "comprehensive"
 
@@ -59,7 +78,8 @@ class TestClassifyIntent:
             "model": "deepseek-chat",
             "usage": {"prompt_tokens": 80, "completion_tokens": 20},
         }
-        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm):
+        with patch("agents.intent_classifier.classifier.get_llm_service", return_value=mock_llm), \
+             self._mock_preprocess():
             result = await classify_intent("宁德时代最近怎么样")
             assert result.company_code == "300750"
 

@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 from services.data_sources.base import DataSourceConfig
 from services.data_sources.akshare_adapter import AKShareAdapter, normalize_stock_code
 from services.data_sources import create_data_source, clear_cache

@@ -5,9 +5,16 @@ import structlog
 from openai import AsyncOpenAI
 from collections import deque
 
+from services.env import env_int, env_str
+
 logger = structlog.get_logger()
 
-DEFAULT_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+DEFAULT_MODEL = env_str("LLM_MODEL", "deepseek-chat")
+LLM_MAX_RETRIES = env_int("LLM_MAX_RETRIES", "3")
+LLM_RATE_LIMIT = env_int("LLM_RATE_LIMIT", "30")
+LLM_CB_THRESHOLD = env_int("LLM_CB_THRESHOLD", "3")
+LLM_CB_RECOVERY = env_int("LLM_CB_RECOVERY", "30")
+LLM_RETRY_BACKOFF_BASE = env_int("LLM_RETRY_BACKOFF_BASE", "2")
 
 AGENT_LLM_CONFIG = {
     "intent_classifier":    {"model": os.getenv("LLM_MODEL_INTENT", DEFAULT_MODEL), "temperature": 0.0, "max_tokens": 512},
@@ -26,28 +33,32 @@ FALLBACK_CONFIG = {
 
 
 class SimpleRateLimiter:
-    """简易 token bucket 限流器"""
+    """简易 token bucket 限流器（线程安全）。"""
     def __init__(self, max_calls_per_minute: int = 30):
         self.max_calls = max_calls_per_minute
         self.timestamps: deque[float] = deque()
+        self._lock = asyncio.Lock()
 
     async def acquire(self):
-        now = time.time()
-        while self.timestamps and self.timestamps[0] < now - 60:
-            self.timestamps.popleft()
-        if len(self.timestamps) >= self.max_calls:
-            wait = self.timestamps[0] + 60 - now
-            if wait > 0:
-                logger.info("rate_limit_wait", seconds=wait)
-                await asyncio.sleep(wait)
-        self.timestamps.append(time.time())
+        async with self._lock:
+            now = time.time()
+            while self.timestamps and self.timestamps[0] < now - 60:
+                self.timestamps.popleft()
+            if len(self.timestamps) >= self.max_calls:
+                wait = self.timestamps[0] + 60 - now
+                if wait > 0:
+                    logger.info("rate_limit_wait", seconds=wait)
+                    await asyncio.sleep(wait)
+            self.timestamps.append(time.time())
 
 
 class LLMService:
     def __init__(self):
         self._primary: AsyncOpenAI | None = None
         self._fallback: AsyncOpenAI | None = None
-        self._rate_limiter = SimpleRateLimiter(max_calls_per_minute=30)
+        self._rate_limiter = SimpleRateLimiter(max_calls_per_minute=LLM_RATE_LIMIT)
+        from services.circuit_breaker import CircuitBreaker
+        self._cb = CircuitBreaker("deepseek_llm", failure_threshold=LLM_CB_THRESHOLD, recovery_timeout=LLM_CB_RECOVERY)
 
     def _ensure_clients(self):
         """Lazy init — only create API clients when first actually used."""
@@ -66,7 +77,7 @@ class LLMService:
     async def invoke(
         self, agent: str, messages: list[dict],
         tools: list[dict] | None = None,
-        response_format: type | None = None,
+        response_format: str | None = None,
     ) -> dict:
         """统一 LLM 调用入口"""
         self._ensure_clients()  # lazy init on first call
@@ -75,7 +86,7 @@ class LLMService:
 
         t0 = time.time()
         last_error = None
-        for attempt in range(3):
+        for attempt in range(LLM_MAX_RETRIES):
             try:
                 kwargs = {
                     "model": config["model"],
@@ -88,7 +99,7 @@ class LLMService:
                 if response_format:
                     kwargs["response_format"] = {"type": "json_object"}
 
-                resp = await self._primary.chat.completions.create(**kwargs)
+                resp = await self._cb.call(self._primary.chat.completions.create(**kwargs))
                 elapsed = (time.time() - t0) * 1000
                 choice = resp.choices[0]
 
@@ -108,15 +119,15 @@ class LLMService:
             except Exception as e:
                 last_error = e
                 logger.warning("llm_call_retry", agent=agent, attempt=attempt, error=str(e))
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
+                if attempt < LLM_MAX_RETRIES - 1:
+                    await asyncio.sleep(LLM_RETRY_BACKOFF_BASE ** attempt)
                 # 最后一次重试尝试 fallback
-                if attempt == 1 and self._fallback:
+                if attempt == LLM_MAX_RETRIES - 1 and self._fallback:
                     logger.info("llm_fallback_switch", from_model=config["model"],
                                 to_model=FALLBACK_CONFIG["model"])
                     try:
-                        kwargs["model"] = FALLBACK_CONFIG["model"]
-                        resp = await self._fallback.chat.completions.create(**kwargs)
+                        fallback_kwargs = {**kwargs, "model": FALLBACK_CONFIG["model"]}
+                        resp = await self._fallback.chat.completions.create(**fallback_kwargs)
                         elapsed = (time.time() - t0) * 1000
                         return {
                             "content": resp.choices[0].message.content,
@@ -130,8 +141,7 @@ class LLMService:
                         logger.error("llm_fallback_failed", error=str(fe))
 
         logger.error("llm_call_exhausted", agent=agent, error=str(last_error))
-        return {"content": "", "tool_calls": None, "model": "none",
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        raise RuntimeError(f"LLM call exhausted after {LLM_MAX_RETRIES} retries: {last_error}")
 
 
 _llm_service: LLMService | None = None
