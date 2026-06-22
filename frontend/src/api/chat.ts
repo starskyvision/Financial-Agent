@@ -85,63 +85,42 @@ export async function postChat(
   }
 }
 
-/** 订阅异步任务进度 SSE 流，完成后返回报告内容 */
-export async function subscribeTaskStream(
+/** 轮询等待综合报告任务完成，完成后返回报告内容 */
+export async function waitForReport(
   taskId: string,
-  onProgress: (msg: string) => void,
   onDone: (report: string) => void,
   onError: (err: string) => void,
+  pollIntervalMs: number = 2000,
 ): Promise<void> {
   const headers: Record<string, string> = {}
   if (API_KEY) headers['X-API-Key'] = API_KEY
 
-  const response = await fetch(`${API_BASE}/tasks/${taskId}/stream`, { headers })
-  const reader = response.body?.getReader()
-  if (!reader) { onError('无法连接任务流'); return }
+  const poll = async () => {
+    try {
+      const statusResp = await fetch(`${API_BASE}/tasks/${taskId}`, { headers })
+      const statusData = await statusResp.json()
 
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            const doneFlag = data.type === 'done' || data.status === 'done'
-            const failFlag = data.type === 'failed' || data.status === 'failed'
-            const msg = data.message || data.stage || ''
-
-            if (doneFlag) {
-              // 任务完成：拉取报告内容
-              const reportResp = await fetch(`${API_BASE}/reports/${taskId}`, { headers })
-              if (reportResp.ok) {
-                const reportData = await reportResp.json()
-                onDone(reportData.report || '')
-              } else {
-                onDone('')
-              }
-              return
-            } else if (failFlag) {
-              onError(data.message || '任务执行失败')
-              return
-            } else if (msg) {
-              onProgress(msg)
-            }
-          } catch { /* skip non-JSON */ }
+      if (statusData.status === 'done') {
+        const reportResp = await fetch(`${API_BASE}/reports/${taskId}`, { headers })
+        if (reportResp.ok) {
+          const reportData = await reportResp.json()
+          onDone(reportData.report || '')
+        } else {
+          onDone('')
         }
+        return
+      } else if (statusData.status === 'failed') {
+        onError(statusData.error || '任务执行失败')
+        return
       }
+      // Still pending — poll again
+      setTimeout(poll, pollIntervalMs)
+    } catch (e: any) {
+      onError(e.message || '网络错误')
     }
-  } catch (e: any) {
-    onError(e.message || '连接中断')
   }
+
+  poll()
 }
 
 export async function postTask(companyCode: string, reportDate: string = '') {

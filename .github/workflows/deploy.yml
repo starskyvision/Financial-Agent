@@ -75,10 +75,11 @@ jobs:
           script: |
             cd /opt/financial-agent
             git pull origin master
-            echo "PG_PASSWORD=${{ secrets.PG_PASSWORD }}" > .env.production
-            echo "DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}" >> .env.production
-            echo "API_KEY=${{ secrets.API_KEY }}" >> .env.production
+            export PG_PASSWORD="${{ secrets.PG_PASSWORD }}"
+            export DEEPSEEK_API_KEY="${{ secrets.DEEPSEEK_API_KEY }}"
+            export API_KEY="${{ secrets.API_KEY }}"
             docker compose build
             docker compose up -d --force-recreate
             sleep 10
             curl -f http://localhost:8000/api/v1/health || (docker compose down && exit 1)
+            unset PG_PASSWORD DEEPSEEK_API_KEY API_KEY

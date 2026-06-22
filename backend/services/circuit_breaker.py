@@ -33,6 +33,7 @@ class CircuitBreaker:
         self._lock = asyncio.Lock()
 
     async def call(self, coro):
+        # Phase 1: Check state under lock
         async with self._lock:
             now = time.time()
 
@@ -42,16 +43,24 @@ class CircuitBreaker:
                 self.state = "half_open"
                 logger.info("circuit_half_open", service=self.name)
 
-            try:
-                result = await coro
-                self.failure_count = 0
-                self.state = "closed"
-                return result
-            except Exception:
+        # Phase 2: Execute the call outside the lock (allows concurrent calls)
+        try:
+            result = await coro
+        except CircuitBreakerOpenError:
+            raise
+        except Exception:
+            # Phase 3: Update failure count under lock
+            async with self._lock:
                 self.failure_count += 1
                 self._last_failure_time = time.time()
                 if self.failure_count >= self.failure_threshold:
                     self.state = "open"
                     logger.error("circuit_breaker_open", service=self.name,
                                  failures=self.failure_count)
-                raise
+            raise
+
+        # Success: reset under lock
+        async with self._lock:
+            self.failure_count = 0
+            self.state = "closed"
+        return result

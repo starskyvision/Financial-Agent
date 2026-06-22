@@ -3,7 +3,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     ports:
-      - "15432:5432"
+      - "127.0.0.1:15432:5432"
     environment:
       POSTGRES_USER: financial_agent
       POSTGRES_PASSWORD: ${PG_PASSWORD:-financial_agent_2024}
@@ -21,7 +21,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "16379:6379"
+      - "127.0.0.1:16379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --save 900 1 --save 300 10 --save 60 10000
@@ -66,6 +66,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      - API_KEY=${API_KEY:-}
       - BGE_M3_PATH=${BGE_M3_PATH:-/models/bge-m3}
     volumes:
       - ${BGE_M3_PATH:-./models/bge-m3}:/models/bge-m3:ro
@@ -84,6 +85,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://financial_agent:${PG_PASSWORD:-financial_agent_2024}@postgres:5432/financial_agent
       - REDIS_URL=redis://redis:6379/0
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      - BGE_M3_PATH=${BGE_M3_PATH:-/models/bge-m3}
     depends_on:
       postgres:
         condition: service_healthy

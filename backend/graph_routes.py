@@ -8,7 +8,10 @@ def route_after_collect(state: AgentState) -> str:
     """数据收集节点后——根据 intent 分发"""
     intent = state.get("intent", "comprehensive")
     if state.get("raw_data") is None:
-        logger.info("route_after_collect_no_data")
+        logger.info("route_after_collect_no_data", intent=intent)
+        # comprehensive 仍走完整管道，让下游节点用 LLM 知识兜底生成报告
+        if intent == "comprehensive":
+            return "financial_analyzer"
         return "output"
     logger.info("route_after_collect", intent=intent)
     match intent:

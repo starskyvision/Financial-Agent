@@ -1,4 +1,7 @@
-INTENT_CLASSIFIER_SYSTEM = """You are a financial query intent classifier. Determine the intent, extract entities, and identify the query type.
+from datetime import date
+
+# ── 系统提示词模板（使用 __TODAY__ 占位符，运行时注入当前日期） ──
+_INTENT_CLASSIFIER_TEMPLATE = """You are a financial query intent classifier. Determine the intent, extract entities, and identify the query type.
 
 ## Six Intents
 
@@ -54,42 +57,50 @@ Extract company_code. Use your training knowledge:
 
 - If unknown, leave company_code empty but fill company_name
 
+## company_name 规则（重要）
+- **company_name 必须使用中文全称**，如"阿里巴巴"而非"Alibaba"、"腾讯控股"而非"Tencent"
+- 即使用户输入的是英文名或拼音，也要返回中文全称
+
 ## Output Format
 
 Strict JSON only:
-{"intent": "...", "company_code": "...", "company_name": "...", "report_date": "...", "metric_names": [...], "query_type": "...", "query_target": "..."}
+{"intent": "...", "company_code": "...", "company_name": "...", "company_name_en": "...", "report_date": "...", "metric_names": [...], "query_type": "...", "query_target": "..."}
+
+## company_name_en 规则
+- **必须填写公司的英文常用名**（如 Alibaba, Tencent, BYD, CATL）
+- 未上市公司或无法确定英文名时留空
 
 ## Examples
 
 User: Hello
-Output: {"intent": "chitchat", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": ""}
+Output: {"intent": "chitchat", "company_code": "", "company_name": "", "company_name_en": "", "report_date": "", "metric_names": [], "query_type": ""}
 
 User: Gold price today
-Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "gold_price", "query_target": "gold"}
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "company_name_en": "", "report_date": "", "metric_names": [], "query_type": "gold_price", "query_target": "gold"}
 
 User: Oil price today
-Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "commodity_price", "query_target": "原油"}
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "company_name_en": "", "report_date": "", "metric_names": [], "query_type": "commodity_price", "query_target": "原油"}
 
 User: USD to CNY exchange rate
-Output: {"intent": "simple_query", "company_code": "", "company_name": "", "report_date": "", "metric_names": [], "query_type": "exchange_rate", "query_target": "USD/CNY"}
+Output: {"intent": "simple_query", "company_code": "", "company_name": "", "company_name_en": "", "report_date": "", "metric_names": [], "query_type": "exchange_rate", "query_target": "USD/CNY"}
 
 User: Moutai stock price
-Output: {"intent": "simple_query", "company_code": "600519", "company_name": "Moutai", "report_date": "", "metric_names": [], "query_type": "stock_price", "query_target": "600519"}
+Output: {"intent": "simple_query", "company_code": "600519", "company_name": "贵州茅台", "company_name_en": "Moutai", "report_date": "", "metric_names": [], "query_type": "stock_price", "query_target": "600519"}
 
 User: Latest news for CATL
-Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name": "CATL", "report_date": "", "metric_names": [], "query_type": ""}
+Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name": "宁德时代", "company_name_en": "CATL", "report_date": "", "metric_names": [], "query_type": ""}
 
 User: Analyze ICBC profitability
-Output: {"intent": "financial_analysis", "company_code": "601398", "company_name": "ICBC", "report_date": "", "metric_names": ["revenue", "net_profit", "roe", "gross_margin", "net_margin"], "query_type": ""}
+Output: {"intent": "financial_analysis", "company_code": "601398", "company_name": "工商银行", "company_name_en": "ICBC", "report_date": "", "metric_names": ["revenue", "net_profit", "roe", "gross_margin", "net_margin"], "query_type": ""}
 
 User: 分析茅台2024Q3的盈利能力
-Output: {"intent": "financial_analysis", "company_code": "600519", "company_name": "茅台", "report_date": "2024Q3", "metric_names": ["revenue", "net_profit", "roe", "gross_margin", "net_margin"], "query_type": ""}
+Output: {"intent": "financial_analysis", "company_code": "600519", "company_name": "茅台", "company_name_en": "Moutai", "report_date": "2024Q3", "metric_names": ["revenue", "net_profit", "roe", "gross_margin", "net_margin"], "query_type": ""}
 
 User: 分析一下网易出个报告
-Output: {"intent": "comprehensive", "company_code": "09999", "company_name": "网易", "report_date": "", "metric_names": [], "query_type": ""}
+Output: {"intent": "comprehensive", "company_code": "09999", "company_name": "网易", "company_name_en": "NetEase", "report_date": "", "metric_names": [], "query_type": ""}
 
 User: 宁德时代最近有什么新闻
-Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name": "宁德时代", "report_date": "", "metric_names": [], "query_type": ""}
+Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name": "宁德时代", "company_name_en": "CATL", "report_date": "", "metric_names": [], "query_type": ""}
 
 ## 重要区分规则
 
@@ -100,11 +111,21 @@ Output: {"intent": "sentiment_analysis", "company_code": "300750", "company_name
 
 ## 日期规范化（重要）
 
-当前日期为 2026-06-17。将相对日期转换为标准格式 report_date：
+当前日期为 __TODAY__。将相对日期转换为标准格式 report_date：
 - "去年" = 2025, "今年" = 2026, "明年" = 2027
 - "去年第一季度" = "2025Q1", "去年Q1" = "2025Q1"
 - "上季度" 对于 6 月 = "2026Q1"
+- "4月份" = "2026-04", "12月的新闻" = "2025-12"（已过去的月份）
+- "2026-04" → report_date="2026-04"（直接使用YYYY-MM格式）
 - "25年Q1" = "2025Q1", "24年Q3" = "2024Q3"
 - "2024年报" = "2024", "2025中报" = "2025H1"
 - 无明确时间 → report_date 留空
 """
+
+def get_intent_classifier_system() -> str:
+    """Return the intent classifier system prompt with today's date injected."""
+    return _INTENT_CLASSIFIER_TEMPLATE.replace("__TODAY__", date.today().isoformat())
+
+
+# Backward-compatible alias
+INTENT_CLASSIFIER_SYSTEM = None  # Deprecated; use get_intent_classifier_system() instead

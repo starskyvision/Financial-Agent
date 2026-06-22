@@ -21,10 +21,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from db.models import Base
 target_metadata = Base.metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+
+def _get_db_url() -> str:
+    """Get database URL with env var priority.
+
+    Prefers DATABASE_URL environment variable over alembic.ini value.
+    Rejects the REPLACE_ME placeholder to prevent accidental use.
+    """
+    env_url = os.getenv("DATABASE_URL", "")
+    if env_url:
+        return env_url
+    ini_url = config.get_main_option("sqlalchemy.url")
+    if ini_url is None:
+        raise RuntimeError(
+            "Database URL not configured. Set DATABASE_URL env var "
+            "or update sqlalchemy.url in alembic.ini."
+        )
+    if "REPLACE_ME" in ini_url:
+        raise RuntimeError(
+            "alembic.ini contains placeholder password 'REPLACE_ME'. "
+            "Set DATABASE_URL environment variable instead."
+        )
+    return ini_url
 
 
 def run_migrations_offline() -> None:
@@ -39,7 +57,7 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
+    url = _get_db_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -58,8 +76,12 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # Override ini URL with env var if set
+    db_url = _get_db_url()
+    config_section = config.get_section(config.config_ini_section, {})
+    config_section["sqlalchemy.url"] = db_url
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        config_section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

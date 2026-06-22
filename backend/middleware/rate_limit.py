@@ -14,10 +14,11 @@ async def rate_limit_middleware(request: Request, call_next):
     if RATE_LIMIT <= 0:
         return await call_next(request)
 
-    client_key = request.headers.get(
-        "X-API-Key",
-        request.client.host if request.client else "unknown",
-    )
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        client_key = f"key:{api_key}"
+    else:
+        client_key = f"ip:{request.client.host}" if request.client else "ip:unknown"
     redis_key = f"rate_limit:{client_key}"
 
     try:

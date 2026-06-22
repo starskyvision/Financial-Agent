@@ -40,12 +40,20 @@ async def report_generator_node(state: AgentState) -> AgentState:
 
             code = state.get("company_code", "")
             name = state.get("company_name", code)
-            query = f"{name} 财务分析 经营风险 行业展望 投资评级"
+            code_hint = f" ({code})" if code else ""
+            name_en = state.get("company_name_en", "")
+            en_hint = f" {name_en}" if name_en else ""
+            query = f"{name}{en_hint}{code_hint} 财务分析 经营风险 行业展望 投资评级"
             async_session = get_async_session_factory()
             results = await search_rag(
                 query=query, company_code=code, top_k=RAG_TOP_K_DEFAULT,
-                session_factory=async_session,
+                session_factory=async_session, doc_type="report",
             )
+            if not results and code:
+                results = await search_rag(
+                    query=query, company_code="", top_k=RAG_TOP_K_DEFAULT,
+                    session_factory=async_session, doc_type="report",
+                )
             if results:
                 rag_parts = []
                 for r in results:

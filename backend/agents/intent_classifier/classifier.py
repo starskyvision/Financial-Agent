@@ -3,7 +3,7 @@ import structlog
 from state import IntentResult
 from constants.metrics import MAX_HISTORY_TURNS
 from services.llm_service import get_llm_service
-from prompts.intent_classifier import INTENT_CLASSIFIER_SYSTEM
+from prompts.intent_classifier import get_intent_classifier_system
 
 logger = structlog.get_logger()
 
@@ -78,17 +78,63 @@ def _search_stock_code(name: str) -> str:
 
 
 
+# ── 已知公司名列表（用于校验 LLM 返回 & 消息中提取） ──
+_KNOWN_COMPANIES = [
+    "贵州茅台", "比亚迪", "宁德时代", "腾讯控股", "工商银行", "中国平安",
+    "格力电器", "美的集团", "万科A", "招商银行", "兴业银行", "中国石油",
+    "中国石化", "中国海油", "中国移动", "中国电信", "中国联通", "中国神华",
+    "长江电力", "五粮液", "隆基绿能", "药明康德", "恒瑞医药", "网易",
+    "华为", "阿里巴巴", "京东", "百度", "小米", "美团", "快手", "哔哩哔哩",
+    "蔚来", "小鹏", "理想", "拼多多", "携程", "联想", "海尔", "海康威视",
+    "迈瑞医疗", "立讯精密", "中兴通讯", "中芯国际", "京东方", "顺丰",
+]
+
+
+def _name_in_message(name: str, message: str) -> bool:
+    """Check if the company name (or a significant substring) appears in the message."""
+    if not name:
+        return True  # no name to validate
+    # Direct substring match
+    if name in message:
+        return True
+    # Try 2-char prefix match (e.g. "腾讯" matches "tx" or "腾讯控股")
+    if len(name) >= 2 and name[:2] in message:
+        return True
+    if len(name) >= 3 and name[:3] in message:
+        return True
+    return False
+
+
+def _extract_company_from_message(message: str) -> str:
+    """Extract company name from user message using known company list.
+    Returns the first matching company name, or empty string if none found.
+    """
+    for company in _KNOWN_COMPANIES:
+        if company in message:
+            return company
+        # Check common abbreviations: 2-3 char prefixes
+        if len(company) >= 3 and company[:2] in message:
+            return company
+        if len(company) >= 4 and company[:3] in message:
+            return company
+    return ""
+
+
 async def classify_intent(message: str, history: list[dict] | None = None) -> IntentResult:
     """LLM 分类意图 + 提取实体，规则预处理 + 关键词兜底 + AKShare 搜索兜底股票代码"""
+    # 保存原始消息，用于后续公司名校验（RAG 改写可能注入其他实体）
+    original_message = message
+
     # 第零层：规则预处理 + RAG 查询改写（相对日期、股票别名、单位标准化、知识库实体注入、低置信度 LLM 改写）
+    # RAG 改写是尽力而为的增强，失败时回退到原始消息，不阻断有效查询
     from services.query_preprocessor import preprocess_with_rag, QueryRewriteError
     try:
         message = await preprocess_with_rag(message)
-    except QueryRewriteError:
-        raise  # propagate to main.py for user-facing error response
+    except QueryRewriteError as e:
+        logger.warning("rag_rewrite_fallback", original=message[:60], error=str(e))
 
     llm = get_llm_service()
-    messages = [{"role": "system", "content": INTENT_CLASSIFIER_SYSTEM}]
+    messages = [{"role": "system", "content": get_intent_classifier_system()}]
     if history:
         messages.extend(history[-MAX_HISTORY_TURNS:])
     messages.append({"role": "user", "content": message})
@@ -122,6 +168,15 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
         code = data.get("company_code", "")
         name = data.get("company_name", "")
 
+        # ── 公司名校验：LLM 返回的名称必须在原始消息中有迹可循 ──
+        if name and not _name_in_message(name, original_message):
+            logger.warning("company_name_mismatch", llm_name=name, original=original_message[:60])
+            fallback = _extract_company_from_message(original_message)
+            if fallback:
+                logger.info("company_name_fallback", from_name=name, to=fallback)
+                name = fallback
+                code = ""  # 清空旧 code，触发 _search_stock_code 重新搜索
+
         # 中概股 US ticker → 优先 HK 代码（AKShare 港股数据更全）
         _DUAL_LISTED_MAP: dict[str, str] = {
             "BIDU": "09888", "JD": "09618", "NTES": "09999",
@@ -146,6 +201,7 @@ async def classify_intent(message: str, history: list[dict] | None = None) -> In
             intent=intent,
             company_code=code,
             company_name=name,
+            company_name_en=data.get("company_name_en", ""),
             report_date=data.get("report_date", ""),
             metric_names=data.get("metric_names", []),
             query_type=data.get("query_type", ""),

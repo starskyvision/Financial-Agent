@@ -14,6 +14,7 @@ class IntentResult(BaseModel):
     intent: str
     company_code: str
     company_name: str = ""
+    company_name_en: str = ""  # English name for cross-language RAG retrieval
     report_date: str = ""
     metric_names: list[str] = []
     query_type: str = ""
@@ -74,6 +75,7 @@ class AgentState(TypedDict, total=False):
     # 用户输入
     company_code: str
     company_name: str
+    company_name_en: str
     report_date: str
 
     # 各 Agent 输出
@@ -87,6 +89,7 @@ class AgentState(TypedDict, total=False):
 
     # 反思控制
     errors: list[str]
+    prev_fact_errors: list[str]
     retry_count: int
     status: str  # pending | running | done | failed
 
@@ -98,6 +101,7 @@ def make_initial_state(task_id: str, company_code: str = "", report_date: str = 
         intent="",
         company_code=company_code,
         company_name="",
+        company_name_en="",
         report_date=report_date,
         raw_data=None,
         financial_analysis=None,
@@ -105,6 +109,7 @@ def make_initial_state(task_id: str, company_code: str = "", report_date: str = 
         chat_reply=None,
         draft_report=None,
         errors=[],
+        prev_fact_errors=[],
         retry_count=0,
         status="pending",
     )

@@ -205,6 +205,7 @@ async def chat(request: ChatRequest):
     state["intent"] = intent_result.intent
     state["company_code"] = intent_result.company_code
     state["company_name"] = intent_result.company_name
+    state["company_name_en"] = intent_result.company_name_en
     state["report_date"] = intent_result.report_date
     state["query_type"] = intent_result.query_type
     state["query_target"] = intent_result.query_target
@@ -242,45 +243,6 @@ async def get_task_status(task_id: str):
     return await TaskManager.get_status(task_id)
 
 
-@app.get("/api/v1/tasks/{task_id}/stream")
-async def stream_task_progress(task_id: str):
-    async def event_generator():
-        r = await get_redis()
-        try:
-            # 1. Emit current status first
-            status = await TaskManager.get_status(task_id)
-            yield f"event: status\ndata: {json.dumps(status, ensure_ascii=False)}\n\n"
-
-            # 2. Replay any historical progress events (for late subscribers)
-            history = await r.lrange(f"task:{task_id}:progress_log", 0, -1)
-            for entry in history:
-                yield f"data: {entry}\n\n"
-
-            # 3. If already done, exit
-            if status.get("status") in ("done", "failed"):
-                return
-
-            # 4. Subscribe to live progress events
-            pubsub = r.pubsub()
-            await pubsub.subscribe(f"task:{task_id}:events")
-            try:
-                async for message in pubsub.listen():
-                    if message["type"] == "message":
-                        yield f"data: {message['data']}\n\n"
-                        try:
-                            event_data = json.loads(message['data'])
-                            if event_data.get("type") in ("done", "failed"):
-                                break
-                        except json.JSONDecodeError:
-                            pass
-            finally:
-                await pubsub.unsubscribe(f"task:{task_id}:events")
-        finally:
-            pass  # get_redis() returns shared client, don't close
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
 @app.get("/api/v1/reports/{task_id}")
 async def get_report(task_id: str):
     status = await TaskManager.get_status(task_id)
@@ -305,26 +267,32 @@ async def health():
         health_status["redis"] = "connected"
     except Exception:
         health_status["redis"] = "disconnected"
-    # PostgreSQL + pgvector (synchronous check — lightweight, runs rarely)
+    # PostgreSQL + pgvector (async check to avoid blocking event loop)
     try:
-        import psycopg2
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from sqlalchemy import text
         db_url = os.getenv("DATABASE_URL", "")
         if not db_url:
             health_status["postgres"] = "not_configured"
         else:
-            conn = cur = None
+            # Convert sync postgresql:// URL to async postgresql+asyncpg://
+            async_url = db_url.replace(
+                "postgresql://", "postgresql+asyncpg://", 1
+            ).replace(
+                "postgresql+asyncpg://financial_agent:", "postgresql+asyncpg://financial_agent:", 1
+            )
+            async_url = async_url.replace("postgresql://", "postgresql+asyncpg://")
+            engine = create_async_engine(async_url, echo=False)
             try:
-                conn = psycopg2.connect(db_url, connect_timeout=3)
-                cur = conn.cursor()
-                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-                has_vector = cur.fetchone() is not None
-                health_status["postgres"] = "connected"
-                health_status["pgvector"] = "connected" if has_vector else "not_installed"
+                async with engine.connect() as conn:
+                    result = await conn.execute(
+                        text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                    )
+                    has_vector = result.fetchone() is not None
+                    health_status["postgres"] = "connected"
+                    health_status["pgvector"] = "connected" if has_vector else "not_installed"
             finally:
-                if cur is not None:
-                    cur.close()
-                if conn is not None:
-                    conn.close()
+                await engine.dispose()
     except Exception:
         health_status["postgres"] = "disconnected"
         health_status["pgvector"] = "disconnected"
@@ -343,4 +311,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

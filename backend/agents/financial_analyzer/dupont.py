@@ -18,11 +18,11 @@ def compute_dupont(metrics: dict) -> DupontResult:
     missing = []
 
     # 1. 净利率 = 净利润 / 营收
-    if net_profit and revenue and revenue > 0:
+    if net_profit is not None and revenue is not None and revenue > 0:
         net_margin = round(net_profit / revenue, 4)
-    elif not net_profit or net_profit == 0:
+    elif net_profit is None:
         missing.append("net_profit")
-    elif not revenue or revenue == 0:
+    elif revenue is None or revenue == 0:
         missing.append("revenue")
 
     # 2. 资产周转率 = 营收 / 总资产
@@ -66,9 +66,9 @@ def compute_dupont(metrics: dict) -> DupontResult:
             missing.append(f"ROE 公式不闭合: 传入 {roe}, 计算 {computed_roe}, 偏差 {deviation:.1%}")
 
     return DupontResult(
-        roe=roe if roe else 0,
-        net_margin=net_margin if net_margin else 0,
-        asset_turnover=asset_turnover if asset_turnover else 0,
+        roe=roe if roe is not None else 0,
+        net_margin=net_margin if net_margin is not None else 0,
+        asset_turnover=asset_turnover if asset_turnover is not None else 0,
         equity_multiplier=equity_multiplier,
         is_valid=has_basic and len(missing) == 0 and not formula_mismatch,
         missing_metrics=missing,

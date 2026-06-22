@@ -47,7 +47,7 @@
         <textarea
           v-model="input"
           @keydown.enter.exact.prevent="sendMessage(input)"
-          @keydown.shift.enter="input += '\n'"
+          @keydown.shift.enter.prevent="input = input + '\n'"
           placeholder="输入问题，如：分析茅台2024Q3的盈利能力..."
           rows="2"
           :disabled="loading"
@@ -56,6 +56,7 @@
           {{ loading ? '⏳' : '➤' }}
         </button>
       </div>
+      <div class="disclaimer">内容由AI生成，请仔细甄别</div>
     </div>
   </div>
 </template>
@@ -63,7 +64,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { marked } from 'marked'
-import { postChat, subscribeTaskStream } from '@/api/chat'
+import DOMPurify from 'dompurify'
+import { postChat, waitForReport } from '@/api/chat'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -126,7 +128,13 @@ function ensureActiveConv() {
 }
 
 function renderMarkdown(text: string): string {
-  return marked.parse(text, { breaks: true }) as string
+  const raw = marked.parse(text, { breaks: true }) as string
+  return DOMPurify.sanitize(raw, {
+    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 's', 'a', 'ul', 'ol', 'li',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'code', 'pre',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'span', 'div'],
+    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
+  })
 }
 
 function intentLabel(intent: string): string {
@@ -159,42 +167,47 @@ async function sendMessage(text: string) {
   conv.messages.push(aiMsg)
   await scrollBottom()
 
-  await postChat(
-    trimmed,
-    (intent) => { aiMsg.intent = intent },
-    (text) => { aiMsg.content += text; scrollBottom() },
-    (taskId) => {
-      // 仅综合报告异步任务走这里：订阅进度流
-      aiMsg.intent = 'comprehensive'
-      aiMsg.taskId = taskId
-      aiMsg.content = '⏳ 任务已提交，正在生成报告...\n\n'
-      subscribeTaskStream(
-        taskId,
-        (msg) => { aiMsg.content += `> ${msg}\n\n`; scrollBottom() },
-        (report) => {
-          aiMsg.streaming = false
-          aiMsg.content = report || '报告生成完成，但内容为空。'
-          loading.value = false
-          scrollBottom()
-        },
-        (err) => {
-          aiMsg.streaming = false
-          aiMsg.content += `\n\n❌ ${err}`
-          loading.value = false
-        },
-      )
-    },
-    (error) => {
-      aiMsg.streaming = false
-      aiMsg.content += `\n\n错误: ${error}`
-      loading.value = false
-    },
-    () => {
-      // 快通道 SSE 流正常结束
-      aiMsg.streaming = false
-      loading.value = false
-    },
-  )
+  try {
+    await postChat(
+      trimmed,
+      (intent) => { aiMsg.intent = intent },
+      (text) => { aiMsg.content += text; scrollBottom() },
+      (taskId) => {
+        // 综合报告异步任务：轮询等待完成
+        aiMsg.intent = 'comprehensive'
+        aiMsg.taskId = taskId
+        aiMsg.content = '⏳ 任务已提交，正在生成报告...\n\n'
+        waitForReport(
+          taskId,
+          (report) => {
+            aiMsg.streaming = false
+            aiMsg.content = report || '报告生成完成，但内容为空。'
+            loading.value = false
+            scrollBottom()
+          },
+          (err) => {
+            aiMsg.streaming = false
+            aiMsg.content += `\n\n❌ ${err}`
+            loading.value = false
+          },
+        )
+      },
+      (error) => {
+        aiMsg.streaming = false
+        aiMsg.content += `\n\n错误: ${error}`
+        loading.value = false
+      },
+      () => {
+        // 快通道 SSE 流正常结束
+        aiMsg.streaming = false
+        loading.value = false
+      },
+    )
+  } catch (e: any) {
+    aiMsg.streaming = false
+    aiMsg.content += `\n\n请求失败: ${e.message || '网络错误，请稍后重试'}`
+    loading.value = false
+  }
 }
 
 async function scrollBottom() {
@@ -273,4 +286,6 @@ async function scrollBottom() {
 .chat-input textarea:focus { border-color: #4a90d9; }
 .chat-input button { width: 44px; height: 44px; border: none; border-radius: 8px; background: #4a90d9; color: #fff; font-size: 18px; cursor: pointer; flex-shrink: 0; }
 .chat-input button:disabled { background: #ccc; cursor: not-allowed; }
+
+.disclaimer { text-align: center; font-size: 12px; color: #999; padding: 8px 0 12px; }
 </style>

@@ -188,6 +188,15 @@ async def output_node(state: AgentState) -> AgentState:
 
     if intent == "comprehensive":
         state["chat_reply"] = state.get("draft_report", "")
+        # Append warning for unresolved fact-check errors after max retries
+        errors = state.get("errors", [])
+        retry = state.get("retry_count", 0)
+        if errors and retry >= int(__import__('os').getenv("MAX_RETRY_ROUNDS", "3")):
+            warning = f"\n\n---\n\n⚠️ **自动校验未完全通过**\n\n以下数据项在 {retry} 轮校验后仍与源数据库存在偏差：\n\n"
+            for e in errors:
+                warning += f"- {e}\n"
+            warning += "\n请人工复核上述数据。"
+            state["chat_reply"] = state.get("chat_reply", "") + warning
 
     elif intent == "simple_query":
         raw = state.get("raw_data") or {}

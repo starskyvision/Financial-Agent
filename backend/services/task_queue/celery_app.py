@@ -25,13 +25,22 @@ def _check_and_write_pid():
         try:
             with open(_PID_FILE) as f:
                 old_pid = int(f.read().strip())
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x0400, False, old_pid)
-            if handle:
-                kernel32.CloseHandle(handle)
+            import platform
+            if platform.system() == "Windows":
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.OpenProcess(0x0400, False, old_pid)
+                if handle:
+                    kernel32.CloseHandle(handle)
+                    print(f"ERROR: Celery worker already running (PID {old_pid}).")
+                    print(f"  Kill it first: taskkill //F //PID {old_pid}")
+                    print(f"  Or delete: {_PID_FILE}")
+                    sys.exit(1)
+            else:
+                # Unix: use os.kill(pid, 0) to check if process exists
+                os.kill(old_pid, 0)
                 print(f"ERROR: Celery worker already running (PID {old_pid}).")
-                print(f"  Kill it first: taskkill //F //PID {old_pid}")
+                print(f"  Kill it first: kill {old_pid}")
                 print(f"  Or delete: {_PID_FILE}")
                 sys.exit(1)
         except (ValueError, OSError):
@@ -85,46 +94,9 @@ def _on_worker_init(*args, **kwargs):
 atexit.register(_cleanup_pid)
 
 
-def _publish_progress(task_id: str, event_type: str, message: str = "", data: dict | None = None):
-    """Publish a progress event to Redis pubsub AND persist it for late subscribers."""
-    try:
-        import redis
-        r = redis.from_url(REDIS_URL, decode_responses=True)
-        payload = {"type": event_type, "message": message, "task_id": task_id}
-        if data:
-            payload.update(data)
-        payload_str = json.dumps(payload, ensure_ascii=False)
-        # 1. Pubsub for live subscribers
-        r.publish(f"task:{task_id}:events", payload_str)
-        # 2. Append to a list so late-connecting subscribers can replay history
-        r.rpush(f"task:{task_id}:progress_log", payload_str)
-        r.expire(f"task:{task_id}:progress_log", TASK_TTL)
-        r.close()
-    except Exception as e:
-        logger.warning("progress_publish_failed", task_id=task_id, error=str(e))
-
-
-# Human-readable labels for each graph node
-NODE_LABELS: dict[str, str] = {
-    "intent_classifier":  "意图分类",
-    "data_collector":     "数据收集",
-    "financial_analyzer": "财务分析",
-    "sentiment_analyzer": "舆情解读",
-    "report_generator":   "报告生成",
-    "rewriter":           "事实校验",
-    "output":             "输出编排",
-}
-
-# Comprehensive pipeline: ordered list of expected nodes
-PIPELINE_NODES = [
-    "intent_classifier", "data_collector", "financial_analyzer",
-    "sentiment_analyzer", "report_generator", "output",
-]
-
-
 @celery_app.task(bind=True, max_retries=env_int("CELERY_MAX_RETRIES", "2"))
 def run_comprehensive_analysis(self, task_id: str, company_code: str, report_date: str = "", company_name: str = ""):
-    """Celery async task: execute full pipeline with per-agent progress events."""
+    """Celery async task: execute full analysis pipeline."""
     import asyncio, sys, os as _os
     _backend = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     if _backend not in sys.path:
@@ -134,9 +106,6 @@ def run_comprehensive_analysis(self, task_id: str, company_code: str, report_dat
 
     logger.info("celery_task_start", task_id=task_id, code=company_code, name=company_name)
 
-    def _emit(stage: str, msg: str, **extra):
-        _publish_progress(task_id, "progress", msg, {"stage": stage, **extra})
-
     try:
         state = make_initial_state(task_id)
         state["intent"] = "comprehensive"
@@ -145,45 +114,7 @@ def run_comprehensive_analysis(self, task_id: str, company_code: str, report_dat
         state["report_date"] = report_date
 
         graph = build_graph()
-
-        # ── Run graph with per-node streaming ──
-        async def run():
-            completed: set[str] = set()
-            retry_rounds = 0
-            final = state
-
-            _emit("pipeline", "✅ 意图分类 | 🔄 数据收集 进行中... | ⏳ 财务分析 | ⏳ 舆情解读 | ⏳ 报告生成 | ⏳ 输出")
-
-            # astream yields {node_name: state_update} per node execution
-            async for chunk in graph.astream(state, stream_mode="updates"):
-                for node_name in chunk:
-                    final = chunk[node_name]  # state update from this node
-                    completed.add(node_name)
-
-                    if node_name == "rewriter":
-                        retry_rounds += 1
-
-                    # Build status line
-                    status_parts = []
-                    for n in PIPELINE_NODES:
-                        label = NODE_LABELS.get(n, n)
-                        if n in completed:
-                            status_parts.append(f"✅ {label}")
-                        else:
-                            next_up = _next_node(completed, PIPELINE_NODES)
-                            if n == next_up:
-                                status_parts.append(f"🔄 {label} 进行中...")
-                            else:
-                                status_parts.append(f"⏳ {label}")
-
-                    status = " | ".join(status_parts)
-                    if retry_rounds > 0:
-                        status += f" | 🔄 第{retry_rounds}轮校验"
-                    _emit(node_name, status)
-
-            return final, len(completed), retry_rounds
-
-        final_state, node_count, retries = asyncio.run(run())
+        final_state = asyncio.run(graph.ainvoke(state))
 
         # ── Store result ──
         import redis
@@ -197,15 +128,10 @@ def run_comprehensive_analysis(self, task_id: str, company_code: str, report_dat
         r.setex(f"task:{task_id}", TASK_TTL, json.dumps(result_data, ensure_ascii=False))
         r.close()
 
-        _publish_progress(task_id, "done",
-                          f"✅ 全部完成 — {node_count} 个 Agent 节点 | {retries} 轮校验 | 报告 {len(report)} 字",
-                          {"stage": "completed", "report_length": len(report)})
-
-        logger.info("celery_task_done", task_id=task_id)
+        logger.info("celery_task_done", task_id=task_id, report_length=len(report))
         return {"status": "done", "task_id": task_id}
     except Exception as e:
         logger.error("celery_task_error", task_id=task_id, error=str(e))
-        _publish_progress(task_id, "failed", f"任务失败: {str(e)}", {"stage": "failed"})
         try:
             # Mark task as failed in Redis so frontend sees "failed" not "pending"
             import redis
@@ -220,11 +146,3 @@ def run_comprehensive_analysis(self, task_id: str, company_code: str, report_dat
         except Exception:
             pass
         raise self.retry(exc=e, countdown=CELERY_RETRY_COUNTDOWN)
-
-
-def _next_node(completed: set[str], pipeline: list[str]) -> str | None:
-    """Return the first pipeline node not yet completed."""
-    for n in pipeline:
-        if n not in completed:
-            return n
-    return None

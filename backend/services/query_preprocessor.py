@@ -91,9 +91,6 @@ async def _llm_rewrite_query(
     retrieved: list[dict],
     timeout: float | None = None,
 ) -> str:
-    if timeout is None:
-        from constants.metrics import LLM_REWRITE_TIMEOUT
-        timeout = LLM_REWRITE_TIMEOUT
     """用 LLM 改写模糊查询。
 
     Args:
@@ -107,6 +104,9 @@ async def _llm_rewrite_query(
     Raises:
         QueryRewriteError: LLM 调用失败或返回空结果
     """
+    if timeout is None:
+        from constants.metrics import LLM_REWRITE_TIMEOUT
+        timeout = LLM_REWRITE_TIMEOUT
     # 拼接检索片段
     doc_parts: list[str] = []
     for i, doc in enumerate(retrieved[:3], 1):  # up to 3 docs in LLM prompt context
@@ -222,7 +222,26 @@ def _resolve_relative_dates(text: str, now: datetime | None = None) -> str:
     for old, new in rules:
         if old in result:
             result = result.replace(old, new)
+
+    # ── "X月份" → absolute YYYY-MM (resolve to most recent occurrence) ──
+    result = re.sub(
+        r'(\d{1,2})\s*月份',
+        lambda m: _resolve_month(int(m.group(1)), now),
+        result,
+    )
+
     return result
+
+
+def _resolve_month(month: int, now: datetime) -> str:
+    """Resolve 'X月份' to the most recent occurrence of that month."""
+    if not 1 <= month <= 12:
+        return f"{month}月份"
+    y = now.year
+    # If the target month is after current month, it was last year
+    if month > now.month:
+        y -= 1
+    return f"{y}-{month:02d}"
 
 
 # ── 3. 股票别名 → 正式简称 ──
@@ -363,8 +382,9 @@ def _append_intent_hint(text: str) -> str:
     top = max(scores, key=scores.get)  # type: ignore[arg-type]
     # 仅当最高分 ≥ 2 且无平局时才追加
     if scores[top] >= 2 and list(scores.values()).count(scores[top]) == 1:
-        # 不做实际改写，保持语义完整；意图信息由 classifier 自行判断
-        pass
+        # 在 query 末尾追加隐式意图标记，帮助 classifier 判断
+        hint = f"\n[意图倾向: {top}]"
+        return text + hint
 
     return text
 
@@ -377,6 +397,7 @@ def _append_intent_hint(text: str) -> str:
 _PIPELINE = [
     ("normalize_whitespace", _normalize_whitespace),
     ("resolve_dates", _resolve_relative_dates),
+    ("normalize_names", _normalize_stock_names),
     ("normalize_units", _normalize_units),
     ("normalize_punctuation", _normalize_punctuation),
 ]
@@ -445,7 +466,7 @@ async def preprocess_with_rag(
 
     # Step 1: Rule preprocessing (sync)
     cleaned = preprocess(text, steps=[
-        "normalize_whitespace", "resolve_dates",
+        "normalize_whitespace", "resolve_dates", "normalize_names",
     ])
 
     # Step 2: RAG retrieval
